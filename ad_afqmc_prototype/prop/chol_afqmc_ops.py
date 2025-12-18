@@ -1,0 +1,234 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from functools import partial
+from typing import Any, Callable, NamedTuple, Tuple
+
+import jax
+import jax.numpy as jnp
+from jax import lax, tree_util
+
+from ..ham.chol import ham_chol
+from .utils import taylor_expm_action
+
+
+@tree_util.register_pytree_node_class
+@dataclass(frozen=True)
+class chol_afqmc_ctx:
+    dt: jax.Array
+    sqrt_dt: jax.Array
+    exp_h1_half: jax.Array  # (n,n) or (ns,ns)
+    mf_shifts: jax.Array  # (n_fields,)
+    h0_prop: jax.Array  # scalar
+
+    def tree_flatten(self):
+        return (
+            self.dt,
+            self.sqrt_dt,
+            self.exp_h1_half,
+            self.mf_shifts,
+            self.h0_prop,
+        ), ()
+
+    @classmethod
+    def tree_unflatten(cls, aux, children):
+        dt, sqrt_dt, exp_h1_half, mf_shifts, h0_prop = children
+        return cls(
+            dt=dt,
+            sqrt_dt=sqrt_dt,
+            exp_h1_half=exp_h1_half,
+            mf_shifts=mf_shifts,
+            h0_prop=h0_prop,
+        )
+
+
+class chol_afqmc_ops(NamedTuple):
+    n_fields: Callable[[], int]
+    build_prop_ctx: Callable[[jax.Array, float], chol_afqmc_ctx]  # (rdm1, dt)->ctx
+    apply_one_body_half: Callable[[Any, chol_afqmc_ctx], Any]  # (w, ctx)->w
+    apply_two_body: Callable[
+        [Any, jax.Array, chol_afqmc_ctx, int], Any
+    ]  # (w, field, ctx, n_terms)->w
+
+
+def _as_total_rdm1_restricted(dm: jax.Array) -> jax.Array:
+    if dm.ndim == 3 and dm.shape[0] == 2:
+        return dm[0] + dm[1]
+    return dm
+
+
+def _mf_shifts(ham_data: ham_chol, trial_rdm1: jax.Array) -> jax.Array:
+    dm = trial_rdm1
+    if ham_data.basis == "restricted":
+        dm = _as_total_rdm1_restricted(dm)
+    return 1.0j * jnp.einsum("gij,ji->g", ham_data.chol, dm, optimize="optimal")
+
+
+def _build_exp_h1_half_from_h1(h1: jax.Array, dt: jax.Array) -> jax.Array:
+    return jax.scipy.linalg.expm(-0.5 * dt * h1)
+
+
+def _make_vhs_split_flat(*, chol_flat: jax.Array, x: jax.Array, n: int) -> jax.Array:
+    # chol_flat: (n_fields, n*n) real
+    v_re = jnp.real(x) @ chol_flat  # (n*n,)
+    v_im = jnp.imag(x) @ chol_flat  # (n*n,)
+    return lax.complex(v_re, v_im).reshape(n, n)
+
+
+def _build_prop_ctx(
+    ham_data: ham_chol, trial_rdm1: jax.Array, dt: float
+) -> chol_afqmc_ctx:
+    dt_a = jnp.array(dt)
+    sqrt_dt = jnp.sqrt(dt_a)
+
+    mf = _mf_shifts(ham_data, trial_rdm1)
+    h0_prop = -ham_data.h0 - 0.5 * jnp.sum(mf**2)
+
+    h1_eff = ham_data.h1
+
+    if ham_data.basis == "restricted":
+        v0m = 0.5 * jnp.einsum(
+            "gik,gkj->ij", ham_data.chol, ham_data.chol, optimize="optimal"
+        )
+        mf_r = (1.0j * mf).real
+        v1m = jnp.einsum("g,gik->ik", mf_r, ham_data.chol, optimize="optimal")
+        h1_eff = h1_eff - v0m - v1m
+
+    exp_h1_half = _build_exp_h1_half_from_h1(h1_eff, dt_a)
+    return chol_afqmc_ctx(
+        dt=dt_a,
+        sqrt_dt=sqrt_dt,
+        exp_h1_half=exp_h1_half,
+        mf_shifts=mf,
+        h0_prop=h0_prop,
+    )
+
+
+def _apply_one_body_half_array(w: jax.Array, prop_ctx: chol_afqmc_ctx) -> jax.Array:
+    return prop_ctx.exp_h1_half @ w
+
+
+def _apply_one_body_half_unrestricted(
+    w_ud: Tuple[jax.Array, jax.Array], prop_ctx: chol_afqmc_ctx
+) -> Tuple[jax.Array, jax.Array]:
+    wu, wd = w_ud
+    e = prop_ctx.exp_h1_half
+    return (e @ wu, e @ wd)
+
+
+def _apply_one_body_half_generalized_from_restricted(
+    w: jax.Array, prop_ctx: chol_afqmc_ctx, *, norb: int
+) -> jax.Array:
+    e = prop_ctx.exp_h1_half
+    top = e @ w[:norb, :]
+    bot = e @ w[norb:, :]
+    return jnp.vstack([top, bot])
+
+
+def _apply_two_body_array(
+    w: jax.Array,
+    field: jax.Array,
+    prop_ctx: chol_afqmc_ctx,
+    n_terms: int,
+    *,
+    make_vhs: Callable[[jax.Array], jax.Array],
+) -> jax.Array:
+    vhs = make_vhs(field).astype(w.dtype)
+    a = (1.0j * prop_ctx.sqrt_dt).astype(w.dtype)
+    return taylor_expm_action(a, vhs, w, n_terms)
+
+
+def _apply_two_body_unrestricted(
+    w_ud: Tuple[jax.Array, jax.Array],
+    field: jax.Array,
+    prop_ctx: chol_afqmc_ctx,
+    n_terms: int,
+    *,
+    make_vhs: Callable[[jax.Array], jax.Array],
+) -> Tuple[jax.Array, jax.Array]:
+    wu, wd = w_ud
+    vhs = make_vhs(field).astype(wu.dtype)
+    a = (1.0j * prop_ctx.sqrt_dt).astype(wu.dtype)
+    return (
+        taylor_expm_action(a, vhs, wu, n_terms),
+        taylor_expm_action(a, vhs, wd, n_terms),
+    )
+
+
+def _apply_two_body_generalized_from_restricted(
+    w: jax.Array,
+    field: jax.Array,
+    prop_ctx: chol_afqmc_ctx,
+    n_terms: int,
+    *,
+    make_vhs: Callable[[jax.Array], jax.Array],
+    norb: int,
+) -> jax.Array:
+    vhs = make_vhs(field).astype(w.dtype)
+    a = (1.0j * prop_ctx.sqrt_dt).astype(w.dtype)
+    top = taylor_expm_action(a, vhs, w[:norb, :], n_terms)
+    bot = taylor_expm_action(a, vhs, w[norb:, :], n_terms)
+    return jnp.vstack([top, bot])
+
+
+def make_chol_afqmc_ops(ham_data: ham_chol, walker_kind: str) -> chol_afqmc_ops:
+    nf = int(ham_data.chol.shape[0])
+
+    def n_fields_() -> int:
+        return nf
+
+    build_prop_ctx = partial(_build_prop_ctx, ham_data)
+    nf = int(ham_data.chol.shape[0])
+    n = int(ham_data.chol.shape[1])
+    chol_flat = ham_data.chol.reshape(nf, -1)
+
+    # make_vhs = partial(_make_vhs_split_flat, chol_flat=chol_flat, n=n)
+    make_vhs: Callable[[jax.Array], jax.Array] = (
+        lambda field, chol_flat=chol_flat, n=n: _make_vhs_split_flat(
+            chol_flat=chol_flat, x=field, n=n
+        )
+    )  # fixes pylance complaint about partial and typing
+
+    if ham_data.basis == "generalized" and walker_kind != "generalized":
+        raise ValueError(
+            "ham_data.basis='generalized' requires walker_kind='generalized'"
+        )
+
+    if ham_data.basis == "restricted":
+        if walker_kind == "restricted":
+            return chol_afqmc_ops(
+                n_fields_,
+                build_prop_ctx,
+                _apply_one_body_half_array,
+                partial(_apply_two_body_array, make_vhs=make_vhs),
+            )
+
+        if walker_kind == "unrestricted":
+            return chol_afqmc_ops(
+                n_fields_,
+                build_prop_ctx,
+                _apply_one_body_half_unrestricted,
+                partial(_apply_two_body_unrestricted, make_vhs=make_vhs),
+            )
+
+        if walker_kind == "generalized":
+            norb = int(ham_data.chol.shape[1])
+            return chol_afqmc_ops(
+                n_fields_,
+                build_prop_ctx,
+                partial(_apply_one_body_half_generalized_from_restricted, norb=norb),
+                partial(
+                    _apply_two_body_generalized_from_restricted,
+                    make_vhs=make_vhs,
+                    norb=norb,
+                ),
+            )
+
+        raise ValueError(f"unknown walker_kind: {walker_kind}")
+
+    return chol_afqmc_ops(
+        n_fields_,
+        build_prop_ctx,
+        _apply_one_body_half_array,
+        partial(_apply_two_body_array, make_vhs=make_vhs),
+    )

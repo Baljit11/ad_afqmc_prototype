@@ -1,0 +1,176 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any
+
+import jax
+import jax.numpy as jnp
+
+from ..core.ops import k_energy, k_force_bias, meas_ops
+from ..core.system import system
+from ..ham.chol import ham_chol
+from ..trial.rhf import _det, rhf_trial
+
+
+def _half_green_from_overlap_matrix(w: jax.Array, ovlp_mat: jax.Array) -> jax.Array:
+    """
+    green_half = (w @ inv(ovlp_mat)).T
+    """
+    return jnp.linalg.solve(ovlp_mat.T, w.T)
+
+
+def overlap_r(walker: jax.Array, trial_data: rhf_trial) -> jax.Array:
+    m = trial_data.mo_coeff.conj().T @ walker
+    return _det(m) ** 2
+
+
+def force_bias_kernel_r(
+    walker: jax.Array, _ham: Any, meas_ctx: rhf_meas_ctx, trial_data: rhf_trial
+) -> jax.Array:
+    m = trial_data.mo_coeff.conj().T @ walker
+    g_half = _half_green_from_overlap_matrix(walker, m)  # (nocc, norb)
+    # RHF: factor 2 for (up+dn)
+    return 2.0 * (meas_ctx.rot_chol_flat @ g_half.reshape(-1))
+
+
+def energy_kernel_r(
+    walker: jax.Array, ham_data: ham_chol, meas_ctx: rhf_meas_ctx, trial_data: rhf_trial
+) -> jax.Array:
+    m = trial_data.mo_coeff.conj().T @ walker
+    g_half = _half_green_from_overlap_matrix(walker, m)  # (nocc, norb)
+
+    e0 = ham_data.h0
+    e1 = 2.0 * jnp.sum(g_half * meas_ctx.rot_h1)
+
+    f = jnp.einsum("gij,jk->gik", meas_ctx.rot_chol, g_half.T, optimize="optimal")
+    c = jax.vmap(jnp.trace)(f)
+    exc = jnp.sum(jax.vmap(lambda x: x * x.T)(f))
+    e2 = 2.0 * jnp.sum(c * c) - exc
+
+    return e0 + e1 + e2
+
+
+def overlap_u(walker: tuple[jax.Array, jax.Array], trial_data: rhf_trial) -> jax.Array:
+    wu, wd = walker
+    cu = trial_data.mo_coeff.conj().T @ wu
+    cd = trial_data.mo_coeff.conj().T @ wd
+    return _det(cu) * _det(cd)
+
+
+def force_bias_kernel_u(
+    walker: tuple[jax.Array, jax.Array],
+    _ham: Any,
+    meas_ctx: rhf_meas_ctx,
+    trial_data: rhf_trial,
+) -> jax.Array:
+    wu, wd = walker
+    mu = trial_data.mo_coeff.conj().T @ wu
+    md = trial_data.mo_coeff.conj().T @ wd
+    gu = _half_green_from_overlap_matrix(wu, mu)  # (nocc_a, norb)
+    gd = _half_green_from_overlap_matrix(wd, md)  # (nocc_b, norb)
+    g = gu + gd
+    return meas_ctx.rot_chol_flat @ g.reshape(-1)
+
+
+def energy_kernel_u(
+    walker: tuple[jax.Array, jax.Array],
+    ham_data: ham_chol,
+    meas_ctx: rhf_meas_ctx,
+    trial_data: rhf_trial,
+) -> jax.Array:
+    wu, wd = walker
+    mu = trial_data.mo_coeff.conj().T @ wu
+    md = trial_data.mo_coeff.conj().T @ wd
+    gu = _half_green_from_overlap_matrix(wu, mu)
+    gd = _half_green_from_overlap_matrix(wd, md)
+
+    e0 = ham_data.h0
+    e1 = jnp.sum((gu + gd) * meas_ctx.rot_h1)
+
+    f_up = jnp.einsum("gij,jk->gik", meas_ctx.rot_chol, gu.T, optimize="optimal")
+    f_dn = jnp.einsum("gij,jk->gik", meas_ctx.rot_chol, gd.T, optimize="optimal")
+    c_up = jax.vmap(jnp.trace)(f_up)
+    c_dn = jax.vmap(jnp.trace)(f_dn)
+    exc_up = jnp.sum(jax.vmap(lambda x: x * x.T)(f_up))
+    exc_dn = jnp.sum(jax.vmap(lambda x: x * x.T)(f_dn))
+
+    e2 = (
+        jnp.sum(c_up * c_up)
+        + jnp.sum(c_dn * c_dn)
+        + 2.0 * jnp.sum(c_up * c_dn)
+        - exc_up
+        - exc_dn
+    ) / 2.0
+
+    return e0 + e1 + e2
+
+
+def overlap_g(walker: jax.Array, trial_data: rhf_trial) -> jax.Array:
+    norb = trial_data.norb
+    cH = trial_data.mo_coeff.conj().T
+    top = cH @ walker[:norb, :]
+    bot = cH @ walker[norb:, :]
+    m = jnp.vstack([top, bot])
+    return _det(m)
+
+
+def force_bias_kernel_g(
+    walker: jax.Array, _ham: Any, meas_ctx: rhf_meas_ctx, trial_data: rhf_trial
+) -> jax.Array:
+    norb, nocc = trial_data.norb, trial_data.nocc
+    cH = trial_data.mo_coeff.conj().T
+    top = cH @ walker[:norb, :]
+    bot = cH @ walker[norb:, :]
+    m = jnp.vstack([top, bot])  # (2*nocc, 2*nocc)
+
+    g_half = _half_green_from_overlap_matrix(walker, m)  # (2*nocc, 2*norb)
+    g_up = g_half[:nocc, :norb]
+    g_dn = g_half[nocc:, norb:]
+    g = g_up + g_dn
+    return meas_ctx.rot_chol_flat @ g.reshape(-1)
+
+
+@dataclass(frozen=True)
+class rhf_meas_ctx:
+    # half-rotated:
+    rot_h1: jax.Array  # (nocc, norb)
+    rot_chol: jax.Array  # (n_chol, nocc, norb)
+    rot_chol_flat: jax.Array  # (n_chol, nocc*norb)
+
+
+def build_meas_ctx(ham_data: ham_chol, trial_data: rhf_trial) -> rhf_meas_ctx:
+    if ham_data.basis != "restricted":
+        raise ValueError(
+            "RHF meas_ops currently assumes ham_chol.basis == 'restricted'."
+        )
+    cH = trial_data.mo_coeff.conj().T  # (nocc, norb)
+    rot_h1 = cH @ ham_data.h1  # (nocc, norb)
+    rot_chol = jnp.einsum("pi,gij->gpj", cH, ham_data.chol, optimize="optimal")
+    rot_chol_flat = rot_chol.reshape(rot_chol.shape[0], -1)
+    return rhf_meas_ctx(rot_h1=rot_h1, rot_chol=rot_chol, rot_chol_flat=rot_chol_flat)
+
+
+def make_rhf_meas_ops(sys: system) -> meas_ops:
+    wk = sys.walker_kind.lower()
+    if wk == "restricted":
+        return meas_ops(
+            overlap=overlap_r,
+            build_meas_ctx=build_meas_ctx,
+            kernels={k_force_bias: force_bias_kernel_r, k_energy: energy_kernel_r},
+        )
+
+    if wk == "unrestricted":
+        return meas_ops(
+            overlap=overlap_u,
+            build_meas_ctx=build_meas_ctx,
+            kernels={k_force_bias: force_bias_kernel_u, k_energy: energy_kernel_u},
+        )
+
+    if wk == "generalized":
+        return meas_ops(
+            overlap=overlap_g,
+            build_meas_ctx=build_meas_ctx,
+            kernels={k_force_bias: force_bias_kernel_g},
+        )
+
+    raise ValueError(f"unknown walker_kind: {sys.walker_kind}")

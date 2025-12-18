@@ -1,0 +1,183 @@
+import jax
+import jax.numpy as jnp
+import pytest
+
+from ad_afqmc_prototype.core.ops import meas_ops, trial_ops
+from ad_afqmc_prototype.core.system import system
+from ad_afqmc_prototype.ham.chol import ham_chol
+from ad_afqmc_prototype.prop.afqmc import afqmc_step
+from ad_afqmc_prototype.prop.chol_afqmc_ops import make_chol_afqmc_ops
+from ad_afqmc_prototype.prop.types import afqmc_params, prop_state
+
+
+def _make_dummy_trial_ops():
+    def get_rdm1(trial_data):
+        return trial_data["rdm1"]
+
+    def overlap(_walker, _trial):
+        return jnp.asarray(1.0 + 0.0j)
+
+    return trial_ops(overlap=overlap, get_rdm1=get_rdm1)
+
+
+def _make_dummy_meas_ops():
+    def build_meas_ctx(_ham, _trial):
+        return None
+
+    kernels = {}
+
+    def overlap(_walker, _trial):
+        return jnp.asarray(1.0 + 0.0j)
+
+    def force_bias_kernel(walker, _ham, _meas_ctx, _trial):
+        n_fields = _ham.chol.shape[0]
+        return jnp.zeros((n_fields,), dtype=walker.dtype)
+
+    kernels["force_bias"] = force_bias_kernel
+
+    return meas_ops(
+        overlap=overlap,
+        build_meas_ctx=build_meas_ctx,
+        kernels=kernels,
+        observables={},
+    )
+
+
+def test_weight_update_matches_h0_prop_and_pop_control_update():
+    norb, nocc, nw, n_fields = 4, 2, 8, 3
+    ham = ham_chol(
+        basis="restricted",
+        h0=jnp.asarray(1.0),
+        h1=jnp.zeros((norb, norb)),
+        chol=jnp.zeros((n_fields, norb, norb)),
+    )
+    sys = system(norb=norb, nelec=(nocc, nocc), walker_kind="restricted")
+
+    params = afqmc_params(
+        dt=0.2,
+        n_chunks=2,
+        n_exp_terms=4,
+        pop_control_damping=0.1,
+    )
+
+    trial_ops_ = _make_dummy_trial_ops()
+    meas_ops = _make_dummy_meas_ops()
+    trial_data = {"rdm1": jnp.zeros((norb, norb))}
+
+    walkers = jnp.ones((nw, norb, nocc), dtype=jnp.complex64)
+    state = prop_state(
+        walkers=walkers,
+        weights=jnp.ones((nw,)),
+        overlaps=jnp.ones((nw,), dtype=jnp.complex64),
+        rng_key=jax.random.PRNGKey(0),
+        pop_control_ene_shift=jnp.asarray(0.0),
+        e_estimate=jnp.asarray(0.0),
+    )
+
+    prop_ops = make_chol_afqmc_ops(ham, sys.walker_kind)
+    prop_ctx = prop_ops.build_prop_ctx(trial_data["rdm1"], params.dt)
+    meas_ctx = meas_ops.build_meas_ctx(ham, trial_data)
+    out = afqmc_step(
+        state,
+        sys=sys,
+        params=params,
+        ham_data=ham,
+        trial_data=trial_data,
+        meas_ops=meas_ops,
+        prop_ops=prop_ops,
+        prop_ctx=prop_ctx,
+        meas_ctx=meas_ctx,
+    )
+
+    expected_w = jnp.exp(-jnp.asarray(params.dt)) * jnp.ones((nw,))
+    assert jnp.allclose(out.weights, expected_w)
+    assert jnp.allclose(out.pop_control_ene_shift, jnp.asarray(0.1))
+    assert jnp.allclose(out.e_estimate, jnp.asarray(0.0))
+
+
+def test_step_matches_manual_walker_propagation_and_is_chunk_invariant():
+
+    norb, nocc, nw, n_fields = 5, 2, 6, 4
+    key = jax.random.PRNGKey(42)
+
+    a = jax.random.normal(key, (norb, norb))
+    h1 = 0.05 * (a + a.T)
+    key, sub = jax.random.split(key)
+    chol = 0.02 * jax.random.normal(sub, (n_fields, norb, norb))
+
+    ham = ham_chol(basis="restricted", h0=jnp.asarray(0.0), h1=h1, chol=chol)
+    sys = system(norb=norb, nelec=(nocc, nocc), walker_kind="restricted")
+
+    params1 = afqmc_params(dt=0.1, n_chunks=1, n_exp_terms=6)
+    params2 = afqmc_params(dt=0.1, n_chunks=3, n_exp_terms=6)
+
+    trial_ops_ = _make_dummy_trial_ops()
+    meas_ops = _make_dummy_meas_ops()
+    trial_data = {"rdm1": jnp.zeros((norb, norb))}
+
+    key, sub = jax.random.split(key)
+    walkers = jax.random.normal(sub, (nw, norb, nocc)).astype(
+        jnp.complex64
+    ) + 1.0j * jax.random.normal(sub, (nw, norb, nocc)).astype(jnp.complex64)
+    state = prop_state(
+        walkers=walkers,
+        weights=jnp.ones((nw,)),
+        overlaps=jnp.ones((nw,), dtype=jnp.complex64),
+        rng_key=jax.random.PRNGKey(0),
+        pop_control_ene_shift=jnp.asarray(0.0),
+        e_estimate=jnp.asarray(0.0),
+    )
+
+    prop_ops = make_chol_afqmc_ops(ham, sys.walker_kind)
+    meas_ctx = meas_ops.build_meas_ctx(ham, trial_data)
+    prop_ctx = prop_ops.build_prop_ctx(trial_data["rdm1"], params1.dt)
+    out1 = afqmc_step(
+        state,
+        sys=sys,
+        params=params1,
+        ham_data=ham,
+        trial_data=trial_data,
+        meas_ops=meas_ops,
+        prop_ops=prop_ops,
+        prop_ctx=prop_ctx,
+        meas_ctx=meas_ctx,
+    )
+
+    key_next, subkey = jax.random.split(state.rng_key)
+    fields = jax.random.normal(subkey, (nw, n_fields)).astype(jnp.complex64)
+
+    ops = make_chol_afqmc_ops(ham, "restricted")
+    ctx = ops.build_prop_ctx(trial_data["rdm1"], params1.dt)
+
+    def trotter(w, f):
+        w1 = ops.apply_one_body_half(w, ctx)
+        w2 = ops.apply_two_body(w1, f, ctx, params1.n_exp_terms)
+        w3 = ops.apply_one_body_half(w2, ctx)
+        return w3
+
+    expected_walkers = jax.vmap(trotter)(walkers, fields)
+
+    assert jnp.allclose(out1.walkers, expected_walkers)
+    assert jnp.allclose(out1.overlaps, jnp.ones((nw,), dtype=jnp.complex64))
+    assert jnp.all(out1.rng_key == key_next)
+
+    out2 = afqmc_step(
+        state,
+        sys=sys,
+        params=params2,
+        ham_data=ham,
+        trial_data=trial_data,
+        meas_ops=meas_ops,
+        prop_ops=prop_ops,
+        prop_ctx=prop_ctx,
+        meas_ctx=meas_ctx,
+    )
+
+    assert jnp.allclose(out2.walkers, out1.walkers)
+    assert jnp.allclose(out2.weights, out1.weights)
+    assert jnp.allclose(out2.overlaps, out1.overlaps)
+    assert jnp.all(out2.rng_key == out1.rng_key)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__])
