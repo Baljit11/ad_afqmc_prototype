@@ -74,7 +74,6 @@ def init_prop_state(
 def afqmc_step(
     state: prop_state,
     *,
-    sys: system,
     params: afqmc_params,
     ham_data: ham_chol,
     trial_data: Any,
@@ -89,6 +88,8 @@ def afqmc_step(
     fields = jax.random.normal(subkey, (nw, prop_ops.n_fields()))
 
     fb_kernel = meas_ops.require_kernel(k_force_bias)
+    # these calls look a bit unclear, ham_data, meas_ctx, trial_data are
+    # passed as to force_bias_kernel
     force_bias = wk.apply_chunked(
         state.walkers, fb_kernel, params.n_chunks, ham_data, meas_ctx, trial_data
     )
@@ -99,29 +100,14 @@ def afqmc_step(
     shift_term = jnp.sum(shifted_fields * prop_ctx.mf_shifts, axis=1)
     fb_term = jnp.sum(fields * field_shifts - 0.5 * field_shifts * field_shifts, axis=1)
 
-    if sys.walker_kind == "unrestricted":
-
-        def prop_fn_u(wu, wd, field):
-            w_ud = (wu, wd)
-            w1 = prop_ops.apply_one_body_half(w_ud, prop_ctx)
-            w2 = prop_ops.apply_two_body(w1, field, prop_ctx, params.n_exp_terms)
-            w3 = prop_ops.apply_one_body_half(w2, prop_ctx)
-            return w3
-
-        walkers_new = wk.apply_chunked_prop(
-            state.walkers, shifted_fields, prop_fn_u, params.n_chunks
-        )
-    else:
-
-        def prop_fn_r(walker, field):
-            w1 = prop_ops.apply_one_body_half(walker, prop_ctx)
-            w2 = prop_ops.apply_two_body(w1, field, prop_ctx, params.n_exp_terms)
-            w3 = prop_ops.apply_one_body_half(w2, prop_ctx)
-            return w3
-
-        walkers_new = wk.apply_chunked_prop(
-            state.walkers, shifted_fields, prop_fn_r, params.n_chunks
-        )
+    walkers_new = wk.apply_chunked_prop(
+        state.walkers,
+        shifted_fields,
+        prop_ops.apply_trotter,
+        params.n_chunks,
+        prop_ctx,
+        params.n_exp_terms,
+    )
 
     overlaps_new = wk.apply_chunked(
         walkers_new, meas_ops.overlap, params.n_chunks, trial_data

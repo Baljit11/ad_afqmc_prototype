@@ -45,8 +45,7 @@ class chol_afqmc_ctx:
 class chol_afqmc_ops(NamedTuple):
     n_fields: Callable[[], int]
     build_prop_ctx: Callable[[jax.Array, float], chol_afqmc_ctx]  # (rdm1, dt)->ctx
-    apply_one_body_half: Callable[[Any, chol_afqmc_ctx], Any]  # (w, ctx)->w
-    apply_two_body: Callable[
+    apply_trotter: Callable[
         [Any, jax.Array, chol_afqmc_ctx, int], Any
     ]  # (w, field, ctx, n_terms)->w
 
@@ -171,23 +170,63 @@ def _apply_two_body_generalized_from_restricted(
     return jnp.vstack([top, bot])
 
 
+def _apply_trotter_r(
+    w: jax.Array,
+    field: jax.Array,
+    prop_ctx: chol_afqmc_ctx,
+    n_terms: int,
+    *,
+    make_vhs: Callable[[jax.Array], jax.Array],
+) -> jax.Array:
+    w1 = _apply_one_body_half_array(w, prop_ctx)
+    w2 = _apply_two_body_array(w1, field, prop_ctx, n_terms, make_vhs=make_vhs)
+    return _apply_one_body_half_array(w2, prop_ctx)
+
+
+def _apply_trotter_u(
+    w_ud: Tuple[jax.Array, jax.Array],
+    field: jax.Array,
+    prop_ctx: chol_afqmc_ctx,
+    n_terms: int,
+    *,
+    make_vhs: Callable[[jax.Array], jax.Array],
+) -> Tuple[jax.Array, jax.Array]:
+    w1 = _apply_one_body_half_unrestricted(w_ud, prop_ctx)
+    w2 = _apply_two_body_unrestricted(w1, field, prop_ctx, n_terms, make_vhs=make_vhs)
+    return _apply_one_body_half_unrestricted(w2, prop_ctx)
+
+
+def _apply_trotter_g_from_restricted(
+    w: jax.Array,
+    field: jax.Array,
+    prop_ctx: chol_afqmc_ctx,
+    n_terms: int,
+    *,
+    make_vhs: Callable[[jax.Array], jax.Array],
+    norb: int,
+) -> jax.Array:
+    w1 = _apply_one_body_half_generalized_from_restricted(w, prop_ctx, norb=norb)
+    w2 = _apply_two_body_generalized_from_restricted(
+        w1, field, prop_ctx, n_terms, make_vhs=make_vhs, norb=norb
+    )
+    return _apply_one_body_half_generalized_from_restricted(w2, prop_ctx, norb=norb)
+
+
 def make_chol_afqmc_ops(ham_data: ham_chol, walker_kind: str) -> chol_afqmc_ops:
+    walker_kind = walker_kind.lower()
     nf = int(ham_data.chol.shape[0])
 
     def n_fields_() -> int:
         return nf
 
     build_prop_ctx = partial(_build_prop_ctx, ham_data)
-    nf = int(ham_data.chol.shape[0])
+
     n = int(ham_data.chol.shape[1])
     chol_flat = ham_data.chol.reshape(nf, -1)
 
-    # make_vhs = partial(_make_vhs_split_flat, chol_flat=chol_flat, n=n)
-    make_vhs: Callable[[jax.Array], jax.Array] = (
-        lambda field, chol_flat=chol_flat, n=n: _make_vhs_split_flat(
-            chol_flat=chol_flat, x=field, n=n
-        )
-    )  # fixes pylance complaint about partial and typing
+    # keep your pylance-friendly closure instead of functools.partial
+    def make_vhs(field: jax.Array, *, chol_flat=chol_flat, n=n) -> jax.Array:
+        return _make_vhs_split_flat(chol_flat=chol_flat, x=field, n=n)
 
     if ham_data.basis == "generalized" and walker_kind != "generalized":
         raise ValueError(
@@ -196,39 +235,28 @@ def make_chol_afqmc_ops(ham_data: ham_chol, walker_kind: str) -> chol_afqmc_ops:
 
     if ham_data.basis == "restricted":
         if walker_kind == "restricted":
-            return chol_afqmc_ops(
-                n_fields_,
-                build_prop_ctx,
-                _apply_one_body_half_array,
-                partial(_apply_two_body_array, make_vhs=make_vhs),
+            apply_trotter = lambda w, f, ctx, n_terms, mv=make_vhs: _apply_trotter_r(
+                w, f, ctx, n_terms, make_vhs=mv
             )
+            return chol_afqmc_ops(n_fields_, build_prop_ctx, apply_trotter)
 
         if walker_kind == "unrestricted":
-            return chol_afqmc_ops(
-                n_fields_,
-                build_prop_ctx,
-                _apply_one_body_half_unrestricted,
-                partial(_apply_two_body_unrestricted, make_vhs=make_vhs),
+            apply_trotter = lambda w, f, ctx, n_terms, mv=make_vhs: _apply_trotter_u(
+                w, f, ctx, n_terms, make_vhs=mv
             )
+            return chol_afqmc_ops(n_fields_, build_prop_ctx, apply_trotter)
 
         if walker_kind == "generalized":
             norb = int(ham_data.chol.shape[1])
-            return chol_afqmc_ops(
-                n_fields_,
-                build_prop_ctx,
-                partial(_apply_one_body_half_generalized_from_restricted, norb=norb),
-                partial(
-                    _apply_two_body_generalized_from_restricted,
-                    make_vhs=make_vhs,
-                    norb=norb,
-                ),
+            apply_trotter = lambda w, f, ctx, n_terms, mv=make_vhs, norb=norb: _apply_trotter_g_from_restricted(
+                w, f, ctx, n_terms, make_vhs=mv, norb=norb
             )
+            return chol_afqmc_ops(n_fields_, build_prop_ctx, apply_trotter)
 
         raise ValueError(f"unknown walker_kind: {walker_kind}")
 
-    return chol_afqmc_ops(
-        n_fields_,
-        build_prop_ctx,
-        _apply_one_body_half_array,
-        partial(_apply_two_body_array, make_vhs=make_vhs),
+    # ham_data.basis == "generalized" (so walker_kind must be generalized):
+    apply_trotter = lambda w, f, ctx, n_terms, mv=make_vhs: _apply_trotter_r(
+        w, f, ctx, n_terms, make_vhs=mv
     )
+    return chol_afqmc_ops(n_fields_, build_prop_ctx, apply_trotter)

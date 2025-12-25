@@ -16,17 +16,11 @@ def _natorbs(dm: jax.Array, n_occ: int) -> jax.Array:
     return vecs[:, :n_occ]
 
 
-def init_walkers(
-    sys: system,
-    rdm1: jax.Array,
-    n_walkers: int,
-    *,
-    walker_kind: Optional[str] = None,
-) -> walkers:
+def init_walkers(sys: system, rdm1: jax.Array, n_walkers: int) -> walkers:
     """
     Initialize walkers from natural orbitals of a trial rdm1.
     """
-    wk = (walker_kind or sys.walker_kind).lower()
+    wk = (sys.walker_kind).lower()
     norb = sys.norb
     nup, ndn = sys.nup, sys.ndn
 
@@ -92,7 +86,8 @@ def n_walkers(w: walkers) -> int:
 
 
 def _chunk_size(nw: int, n_chunks: int) -> int:
-    # nw should be divisible by n_chunks
+    if nw % n_chunks != 0:
+        raise ValueError(f"n_walkers={nw} is not divisible into n_chunks={n_chunks}")
     return nw // n_chunks
 
 
@@ -104,46 +99,32 @@ def apply_chunked(
     **kwargs,
 ) -> jax.Array:
     """
-    Apply a single-walker kernel to all walkers in sequential chunks.
-      - if walkers is an array: apply_fn(walker, *args, **kwargs)
-      - if walkers is (up, dn): apply_fn(walker_up, walker_dn, *args, **kwargs)
+    Apply a single walker kernel to all walkers in sequential chunks.
+    n_chunks > 1 can be used to reduce memory usage at the cost of speed,
+    as chunks are processed sequentially.
+
+    apply_fn(walker_i, *args, **kwargs) -> out_i
+
+    where walker_i can be either:
+      - jax.Array (restricted/generalized)
+      - tuple[jax.Array, jax.Array] (unrestricted)
     """
     nw = n_walkers(w)
+    fn = lambda wi: apply_fn(wi, *args, **kwargs)
+
     if n_chunks == 1:
-        if is_unrestricted(w):
-            wu, wd = w
-            fn = lambda a, b: apply_fn(a, b, *args, **kwargs)
-            return jax.vmap(fn, in_axes=(0, 0))(wu, wd)
-        else:
-            fn = lambda a: apply_fn(a, *args, **kwargs)
-            return jax.vmap(fn, in_axes=0)(w)
+        return jax.vmap(fn, in_axes=0)(w)
 
     cs = _chunk_size(nw, n_chunks)
+    w_c = jax.tree_util.tree_map(lambda x: x.reshape(n_chunks, cs, *x.shape[1:]), w)
 
-    if is_unrestricted(w):
-        wu, wd = w
-        wu_c = wu.reshape(n_chunks, cs, *wu.shape[1:])
-        wd_c = wd.reshape(n_chunks, cs, *wd.shape[1:])
+    def scanned_fun(carry, cw):
+        out = jax.vmap(fn, in_axes=0)(cw)
+        return carry, out
 
-        def scanned_fun(carry, chunk):
-            cu, cd = chunk
-            fn = lambda a, b: apply_fn(a, b, *args, **kwargs)
-            out = jax.vmap(fn, in_axes=(0, 0))(cu, cd)
-            return carry, out
+    _, outs = lax.scan(scanned_fun, None, w_c)
 
-        _, outs = lax.scan(scanned_fun, None, (wu_c, wd_c))
-        return outs.reshape(nw, *outs.shape[2:])
-
-    else:
-        w_c = w.reshape(n_chunks, cs, *w.shape[1:])
-
-        def scanned_fun(carry, chunk):
-            fn = lambda a: apply_fn(a, *args, **kwargs)
-            out = jax.vmap(fn, in_axes=0)(chunk)
-            return carry, out
-
-        _, outs = lax.scan(scanned_fun, None, w_c)
-        return outs.reshape(nw, *outs.shape[2:])
+    return jnp.reshape(outs, (nw, *outs.shape[2:]))
 
 
 def apply_chunked_prop(
@@ -155,54 +136,34 @@ def apply_chunked_prop(
     **kwargs,
 ) -> walkers:
     """
-    Apply a single-walker propagation kernel to all walkers in sequential chunks.
-      - fields is batched: (n_walkers, ...)
-      - if walkers is an array: prop_fn(walker, fields_i, *args, **kwargs) -> walker
-      - if walkers is (up, dn): prop_fn(wu, wd, fields_i, *args, **kwargs) -> (wu, wd)
+    Apply a single walker propagation kernel to all walkers in sequential chunks.
+    n_chunks > 1 can be used to reduce memory usage at the cost of speed,
+    as chunks are processed sequentially.
+
+    prop_fn(walker_i, fields_i, *args, **kwargs) -> walker_i
+
+    where walker_i can be either:
+      - jax.Array (restricted/generalized)
+      - tuple[jax.Array, jax.Array] (unrestricted)
     """
     nw = n_walkers(w)
+    fn = lambda wi, fi: prop_fn(wi, fi, *args, **kwargs)
+
     if n_chunks == 1:
-        if is_unrestricted(w):
-            wu, wd = w
-            fn = lambda a, b, f: prop_fn(a, b, f, *args, **kwargs)
-            out_u, out_d = jax.vmap(fn, in_axes=(0, 0, 0))(wu, wd, fields)
-            return (out_u, out_d)
-        else:
-            fn = lambda a, f: prop_fn(a, f, *args, **kwargs)
-            return jax.vmap(fn, in_axes=(0, 0))(w, fields)
+        return jax.vmap(fn, in_axes=(0, 0))(w, fields)
 
     cs = _chunk_size(nw, n_chunks)
     f_c = fields.reshape(n_chunks, cs, *fields.shape[1:])
+    w_c = jax.tree_util.tree_map(lambda x: x.reshape(n_chunks, cs, *x.shape[1:]), w)
 
-    if is_unrestricted(w):
-        wu, wd = w
-        wu_c = wu.reshape(n_chunks, cs, *wu.shape[1:])
-        wd_c = wd.reshape(n_chunks, cs, *wd.shape[1:])
+    def scanned_fun(carry, xs):
+        cw, cf = xs
+        out = jax.vmap(fn, in_axes=(0, 0))(cw, cf)
+        return carry, out
 
-        def scanned_fun_u(carry, chunk):
-            cu, cd, cf = chunk
-            fn = lambda a, b, f: prop_fn(a, b, f, *args, **kwargs)
-            out_u, out_d = jax.vmap(fn, in_axes=(0, 0, 0))(cu, cd, cf)
-            return carry, (out_u, out_d)
+    _, outs = lax.scan(scanned_fun, None, (w_c, f_c))
 
-        _, outs = lax.scan(scanned_fun_u, None, (wu_c, wd_c, f_c))
-        out_u, out_d = outs
-        return (
-            out_u.reshape(nw, *out_u.shape[2:]),
-            out_d.reshape(nw, *out_d.shape[2:]),
-        )
-
-    else:
-        w_c = w.reshape(n_chunks, cs, *w.shape[1:])
-
-        def scanned_fun(carry, chunk):
-            cw, cf = chunk
-            fn = lambda a, f: prop_fn(a, f, *args, **kwargs)
-            out = jax.vmap(fn, in_axes=(0, 0))(cw, cf)
-            return carry, out
-
-        _, outs = lax.scan(scanned_fun, None, (w_c, f_c))
-        return outs.reshape(nw, *outs.shape[2:])
+    return jax.tree_util.tree_map(lambda x: x.reshape(nw, *x.shape[2:]), outs)
 
 
 def _qr(mat: jax.Array) -> tuple[jax.Array, jax.Array]:
@@ -224,7 +185,7 @@ def orthogonalize(
     walker_kind: str,
 ) -> tuple[walkers, jax.Array]:
     """
-    Orthonormalize walkers.
+    Keeps track of normalization constants.
     """
     wk = walker_kind.lower()
 
@@ -243,6 +204,9 @@ def orthogonalize(
 
 
 def orthonormalize(w: walkers, walker_kind: str) -> walkers:
+    """
+    Throws away normalization constants.
+    """
     w_new, _ = orthogonalize(w, walker_kind)
     return w_new
 
@@ -266,27 +230,14 @@ def multiply_constants(w: walkers, constants: Any) -> walkers:
     return w * c
 
 
-def stochastic_reconfiguration_restricted(walkers, weights, zeta):
-    nwalkers = walkers.shape[0]
-    cumulative_weights = jnp.cumsum(jnp.abs(weights))
-    total_weight = cumulative_weights[-1]
-    average_weight = total_weight / nwalkers
-    weights = jnp.ones(nwalkers) * average_weight
-    z = total_weight * (jnp.arange(nwalkers) + zeta) / nwalkers
-    indices = jax.vmap(jnp.searchsorted, in_axes=(None, 0))(cumulative_weights, z)
-    walkers = walkers[indices]
-    return walkers, weights
-
-
-def stochastic_reconfiguration_unrestricted(walkers, weights, zeta):
-    nwalkers = walkers[0].shape[0]
-    cumulative_weights = jnp.cumsum(jnp.abs(weights))
-    total_weight = cumulative_weights[-1]
-    average_weight = total_weight / nwalkers
-    weights = jnp.ones(nwalkers) * average_weight
-    z = total_weight * (jnp.arange(nwalkers) + zeta) / nwalkers
-    indices = jax.vmap(jnp.searchsorted, in_axes=(None, 0))(cumulative_weights, z)
-    return [walkers[0][indices], walkers[1][indices]], weights
+def _sr_indices(
+    weights: jax.Array, zeta: jax.Array | float, n_walkers: int
+) -> jax.Array:
+    cw = jnp.cumsum(jnp.abs(weights))
+    tot = cw[-1]
+    z = tot * (jnp.arange(n_walkers) + zeta) / n_walkers
+    idx = jnp.searchsorted(cw, z, side="left")
+    return idx
 
 
 def stochastic_reconfiguration(
@@ -294,16 +245,21 @@ def stochastic_reconfiguration(
     weights: jax.Array,
     zeta: jax.Array | float,
     walker_kind: str,
-):
-    """
-    Stochastic reconfiguration wrapper.
-    """
+) -> tuple[walkers, jax.Array]:
     wk = walker_kind.lower()
+    n = w[0].shape[0] if wk == "unrestricted" else w.shape[0]
+
+    cw = jnp.cumsum(jnp.abs(weights))
+    avg = cw[-1] / n
+    weights_new = jnp.full((n,), avg, dtype=weights.dtype)
+
+    idx = _sr_indices(weights, zeta, n)
+
     if wk == "unrestricted":
-        new_w, new_weights = stochastic_reconfiguration_unrestricted(w, weights, zeta)
-        return new_w, new_weights
-    elif wk in ("restricted", "generalized"):
-        new_w, new_weights = stochastic_reconfiguration_restricted(w, weights, zeta)
-        return new_w, new_weights
+        wu, wd = w
+        return (wu[idx], wd[idx]), weights_new
+
+    if wk in ("restricted", "generalized"):
+        return w[idx], weights_new
 
     raise ValueError(f"unknown walker_kind: {walker_kind}")

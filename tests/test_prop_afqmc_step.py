@@ -79,7 +79,6 @@ def test_weight_update_matches_h0_prop_and_pop_control_update():
     meas_ctx = meas_ops.build_meas_ctx(ham, trial_data)
     out = afqmc_step(
         state,
-        sys=sys,
         params=params,
         ham_data=ham,
         trial_data=trial_data,
@@ -133,7 +132,6 @@ def test_step_matches_manual_walker_propagation_and_is_chunk_invariant():
     prop_ctx = prop_ops.build_prop_ctx(trial_data["rdm1"], params1.dt)
     out1 = afqmc_step(
         state,
-        sys=sys,
         params=params1,
         ham_data=ham,
         trial_data=trial_data,
@@ -150,10 +148,7 @@ def test_step_matches_manual_walker_propagation_and_is_chunk_invariant():
     ctx = ops.build_prop_ctx(trial_data["rdm1"], params1.dt)
 
     def trotter(w, f):
-        w1 = ops.apply_one_body_half(w, ctx)
-        w2 = ops.apply_two_body(w1, f, ctx, params1.n_exp_terms)
-        w3 = ops.apply_one_body_half(w2, ctx)
-        return w3
+        return ops.apply_trotter(w, f, ctx, params1.n_exp_terms)
 
     expected_walkers = jax.vmap(trotter)(walkers, fields)
 
@@ -163,7 +158,6 @@ def test_step_matches_manual_walker_propagation_and_is_chunk_invariant():
 
     out2 = afqmc_step(
         state,
-        sys=sys,
         params=params2,
         ham_data=ham,
         trial_data=trial_data,

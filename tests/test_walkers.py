@@ -54,12 +54,13 @@ def test_apply_chunked_matches_vmap_unrestricted(n_chunks: int):
     wu = _rand_complex(k1, (nwalk, norb, nocc_u))
     wd = _rand_complex(k2, (nwalk, norb, nocc_d))
 
-    def fn_one(wu_i, wd_i, beta):
+    def fn_one(w_i, beta):
+        wu_i, wd_i = w_i
         return beta * (jnp.sum(jnp.abs(wu_i) ** 2) + 2.0 * jnp.sum(jnp.abs(wd_i) ** 2))
 
     beta = -0.7
     out_chunked = wk.apply_chunked((wu, wd), fn_one, n_chunks, beta)
-    out_vmap = jax.vmap(lambda a, b: fn_one(a, b, beta))(wu, wd)
+    out_vmap = jax.vmap(lambda a, b: fn_one((a, b), beta))(wu, wd)
 
     assert out_chunked.shape == out_vmap.shape
     assert jnp.allclose(out_chunked, out_vmap, rtol=1e-6, atol=1e-6)
@@ -98,13 +99,14 @@ def test_apply_chunked_prop_matches_vmap_unrestricted(n_chunks: int):
     fields = jax.random.normal(k3, (nwalk, nfields))
     mat = _rand_complex(k4, (norb, norb))
 
-    def prop_one(wu_i, wd_i, field_i, mat):
+    def prop_one(w_i, field_i, mat):
+        wu_i, wd_i = w_i
         s = 0.05 * field_i[1]
         return (wu_i + s * (mat @ wu_i), wd_i - s * (mat @ wd_i))
 
     out_chunked = wk.apply_chunked_prop((wu, wd), fields, prop_one, n_chunks, mat)
     out_vmap_u, out_vmap_d = jax.vmap(
-        lambda a, b, f: prop_one(a, b, f, mat), in_axes=(0, 0, 0)
+        lambda a, b, f: prop_one((a, b), f, mat), in_axes=(0, 0, 0)
     )(wu, wd, fields)
 
     assert isinstance(out_chunked, tuple) and len(out_chunked) == 2

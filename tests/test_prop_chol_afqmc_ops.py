@@ -36,25 +36,5 @@ def test_build_prop_ctx_shapes_and_nfields():
     assert ctx.h0_prop.shape == ()
 
 
-def test_apply_two_body_nterms_zero_is_identity():
-    norb, nocc, nw, n_fields = 4, 2, 3, 5
-    ham = _make_small_ham(norb=norb, n_fields=n_fields, h0=0.0, seed=1)
-
-    ops = make_chol_afqmc_ops(ham, walker_kind="restricted")
-    ctx = ops.build_prop_ctx(jnp.zeros((norb, norb)), 0.3)
-
-    key = jax.random.PRNGKey(0)
-    w = jax.random.normal(key, (nw, norb, nocc)) + 1.0j * jax.random.normal(
-        key, (nw, norb, nocc)
-    )
-    field = jax.random.normal(key, (nw, n_fields))
-
-    def f(wi, fi):
-        return ops.apply_two_body(wi, fi, ctx, 0)
-
-    w2 = jax.vmap(f)(w, field)
-    assert jnp.allclose(w2, w)
-
-
 if __name__ == "__main__":
     pytest.main([__file__])

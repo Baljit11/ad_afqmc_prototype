@@ -38,7 +38,6 @@ def afqmc_block(
     def _scan_step(carry: prop_state, _x: Any):
         carry = afqmc_step(
             carry,
-            sys=sys,
             params=params,
             ham_data=ham_data,
             trial_data=trial_data,
