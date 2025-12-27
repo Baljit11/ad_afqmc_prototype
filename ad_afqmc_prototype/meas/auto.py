@@ -8,14 +8,14 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 
-from ..core.ops import k_energy, k_force_bias, meas_ops, trial_ops
-from ..core.system import system
+from ..core.ops import MeasOps, TrialOps, k_energy, k_force_bias
+from ..core.system import System
 from ..core.typing import trial_data
-from ..ham.chol import ham_chol
+from ..ham.chol import HamChol
 
 
 @dataclass(frozen=True)
-class auto_meas_ctx:
+class AutoMeasCtx:
     """
     Small intermediates for auto-measurements.
     """
@@ -29,11 +29,11 @@ def _v0_from_chol(chol: jax.Array) -> jax.Array:
 
 
 def build_meas_ctx(
-    ham_data: ham_chol, _trial_data: trial_data, eps: float = 1.0e-4
-) -> auto_meas_ctx:
+    ham_data: HamChol, _trial_data: trial_data, eps: float = 1.0e-4
+) -> AutoMeasCtx:
     v0 = _v0_from_chol(ham_data.chol)
     h1_eff = ham_data.h1 - v0
-    return auto_meas_ctx(h1_eff=h1_eff, eps=jnp.asarray(eps))
+    return AutoMeasCtx(h1_eff=h1_eff, eps=jnp.asarray(eps))
 
 
 def _matmul_block_diag_if_needed(mat: jax.Array, w: jax.Array) -> jax.Array:
@@ -59,7 +59,7 @@ def _quad_rot_walker_array(w: jax.Array, mat: jax.Array, x: jax.Array) -> jax.Ar
 
 def _force_bias_from_overlap_array(
     w: jax.Array,
-    ham_data: ham_chol,
+    ham_data: HamChol,
     overlap: Callable[[jax.Array, Any], jax.Array],
     trial_data: trial_data,
 ) -> jax.Array:
@@ -85,8 +85,8 @@ def _force_bias_from_overlap_array(
 
 def force_bias_kernel_r(
     w: jax.Array,
-    ham_data: ham_chol,
-    _meas_ctx: auto_meas_ctx,
+    ham_data: HamChol,
+    _meas_ctx: AutoMeasCtx,
     trial_data: trial_data,
     *,
     overlap,
@@ -96,8 +96,8 @@ def force_bias_kernel_r(
 
 def force_bias_kernel_g(
     w: jax.Array,
-    ham_data: ham_chol,
-    _meas_ctx: auto_meas_ctx,
+    ham_data: HamChol,
+    _meas_ctx: AutoMeasCtx,
     trial_data: trial_data,
     *,
     overlap,
@@ -107,8 +107,8 @@ def force_bias_kernel_g(
 
 def force_bias_kernel_u(
     w: tuple[jax.Array, jax.Array],
-    ham_data: ham_chol,
-    _meas_ctx: auto_meas_ctx,
+    ham_data: HamChol,
+    _meas_ctx: AutoMeasCtx,
     trial_data: trial_data,
     *,
     overlap,
@@ -131,8 +131,8 @@ def force_bias_kernel_u(
 
 def _energy_from_overlap_array(
     w: jax.Array,
-    ham_data: ham_chol,
-    meas_ctx: auto_meas_ctx,
+    ham_data: HamChol,
+    meas_ctx: AutoMeasCtx,
     overlap: Callable[[jax.Array, Any], jax.Array],
     trial_data: trial_data,
 ) -> jax.Array:
@@ -178,8 +178,8 @@ def _energy_from_overlap_array(
 
 def energy_kernel_r(
     w: jax.Array,
-    ham_data: ham_chol,
-    meas_ctx: auto_meas_ctx,
+    ham_data: HamChol,
+    meas_ctx: AutoMeasCtx,
     trial_data: trial_data,
     *,
     overlap,
@@ -189,8 +189,8 @@ def energy_kernel_r(
 
 def energy_kernel_g(
     w: jax.Array,
-    ham_data: ham_chol,
-    meas_ctx: auto_meas_ctx,
+    ham_data: HamChol,
+    meas_ctx: AutoMeasCtx,
     trial_data: trial_data,
     *,
     overlap,
@@ -200,8 +200,8 @@ def energy_kernel_g(
 
 def energy_kernel_u(
     w: tuple[jax.Array, jax.Array],
-    ham_data: ham_chol,
-    meas_ctx: auto_meas_ctx,
+    ham_data: HamChol,
+    meas_ctx: AutoMeasCtx,
     trial_data: trial_data,
     *,
     overlap,
@@ -243,11 +243,11 @@ def energy_kernel_u(
 
 
 def make_auto_meas_ops(
-    sys: system,
-    trial_ops_: trial_ops,
+    sys: System,
+    trial_ops_: TrialOps,
     *,
     eps: float = 1.0e-4,
-) -> meas_ops:
+) -> MeasOps:
     """
     Measurement ops that compute force bias and energy by differentiating overlaps.
     This reuses the trial overlap from `trial_ops_` and avoids trial-specific
@@ -259,7 +259,7 @@ def make_auto_meas_ops(
     wk = sys.walker_kind.lower()
     overlap = trial_ops_.overlap
 
-    def build_ctx(ham_data: ham_chol, trial_data: Any) -> auto_meas_ctx:
+    def build_ctx(ham_data: HamChol, trial_data: Any) -> AutoMeasCtx:
         return build_meas_ctx(ham_data, trial_data, eps=eps)
 
     if wk == "restricted":
@@ -269,7 +269,7 @@ def make_auto_meas_ops(
         ene = lambda walker, ham_data, meas_ctx, trial_data: energy_kernel_r(
             walker, ham_data, meas_ctx, trial_data, overlap=overlap
         )
-        return meas_ops(
+        return MeasOps(
             overlap=overlap,
             build_meas_ctx=build_ctx,
             kernels={k_force_bias: fb, k_energy: ene},
@@ -282,7 +282,7 @@ def make_auto_meas_ops(
         ene = lambda walker, ham_data, meas_ctx, trial_data: energy_kernel_u(
             walker, ham_data, meas_ctx, trial_data, overlap=overlap
         )
-        return meas_ops(
+        return MeasOps(
             overlap=overlap,
             build_meas_ctx=build_ctx,
             kernels={
@@ -298,7 +298,7 @@ def make_auto_meas_ops(
         ene = lambda walker, ham_data, meas_ctx, trial_data: energy_kernel_g(
             walker, ham_data, meas_ctx, trial_data, overlap=overlap
         )
-        return meas_ops(
+        return MeasOps(
             overlap=overlap,
             build_meas_ctx=build_ctx,
             kernels={

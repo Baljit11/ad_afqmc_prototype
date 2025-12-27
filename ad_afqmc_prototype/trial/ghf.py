@@ -5,12 +5,12 @@ from dataclasses import dataclass
 import jax
 import jax.numpy as jnp
 
-from ..core.ops import trial_ops
-from ..core.system import system
+from ..core.ops import TrialOps
+from ..core.system import System
 
 
 @dataclass(frozen=True)
-class ghf_trial:
+class GhfTrial:
     """
     Generalized Hartree–Fock (GHF) trial.
 
@@ -34,7 +34,7 @@ def _det(m: jax.Array) -> jax.Array:
     return jnp.linalg.det(m)
 
 
-def get_rdm1(trial_data: ghf_trial) -> jax.Array:
+def get_rdm1(trial_data: GhfTrial) -> jax.Array:
     """
     Return spin-block 1-RDM for use by AFQMC propagator code that expects
     (2, norb, norb) for restricted-basis Hamiltonians.
@@ -49,7 +49,7 @@ def get_rdm1(trial_data: ghf_trial) -> jax.Array:
     return jnp.stack([dm_up, dm_dn], axis=0)  # (2, norb, norb)
 
 
-def overlap_r(walker: jax.Array, trial_data: ghf_trial) -> jax.Array:
+def overlap_r(walker: jax.Array, trial_data: GhfTrial) -> jax.Array:
     """
     Restricted walker: walker shape (norb, nocc) with nocc=nup=ndn.
     Overlap is det([C_up^H W, C_dn^H W]).
@@ -62,7 +62,7 @@ def overlap_r(walker: jax.Array, trial_data: ghf_trial) -> jax.Array:
     return _det(m)
 
 
-def overlap_u(walker: tuple[jax.Array, jax.Array], trial_data: ghf_trial) -> jax.Array:
+def overlap_u(walker: tuple[jax.Array, jax.Array], trial_data: GhfTrial) -> jax.Array:
     """
     Unrestricted walker: (wu, wd) with shapes (norb, nup), (norb, ndn).
     Overlap is det([C_up^H W_up, C_dn^H W_dn]).
@@ -76,7 +76,7 @@ def overlap_u(walker: tuple[jax.Array, jax.Array], trial_data: ghf_trial) -> jax
     return _det(m)
 
 
-def overlap_g(walker: jax.Array, trial_data: ghf_trial) -> jax.Array:
+def overlap_g(walker: jax.Array, trial_data: GhfTrial) -> jax.Array:
     """
     Generalized walker: walker shape (2*norb, nelec_total).
     Overlap is det(C^H W).
@@ -85,18 +85,18 @@ def overlap_g(walker: jax.Array, trial_data: ghf_trial) -> jax.Array:
     return _det(m)
 
 
-def make_ghf_trial_ops(sys: system) -> trial_ops:
+def make_ghf_trial_ops(sys: System) -> TrialOps:
     wk = sys.walker_kind.lower()
 
     if wk == "restricted":
         if sys.nup != sys.ndn:
             raise ValueError("restricted walkers require nup == ndn.")
-        return trial_ops(overlap=overlap_r, get_rdm1=get_rdm1)
+        return TrialOps(overlap=overlap_r, get_rdm1=get_rdm1)
 
     if wk == "unrestricted":
-        return trial_ops(overlap=overlap_u, get_rdm1=get_rdm1)
+        return TrialOps(overlap=overlap_u, get_rdm1=get_rdm1)
 
     if wk == "generalized":
-        return trial_ops(overlap=overlap_g, get_rdm1=get_rdm1)
+        return TrialOps(overlap=overlap_g, get_rdm1=get_rdm1)
 
     raise ValueError(f"unknown walker_kind: {sys.walker_kind}")

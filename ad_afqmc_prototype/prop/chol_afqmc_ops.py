@@ -7,7 +7,7 @@ import jax
 import jax.numpy as jnp
 from jax import lax, tree_util
 
-from ..ham.chol import ham_chol
+from ..ham.chol import HamChol
 from .utils import taylor_expm_action
 
 # contains low level details of AFQMC chol propagation
@@ -15,7 +15,7 @@ from .utils import taylor_expm_action
 
 @tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class chol_afqmc_ctx:
+class CholAfqmcCtx:
     dt: jax.Array
     sqrt_dt: jax.Array
     exp_h1_half: jax.Array  # (n,n) or (ns,ns)
@@ -43,10 +43,10 @@ class chol_afqmc_ctx:
         )
 
 
-class trotter_ops(NamedTuple):
+class TrotterOps(NamedTuple):
     n_fields: Callable[[], int]
     apply_trotter: Callable[
-        [Any, jax.Array, chol_afqmc_ctx, int], Any
+        [Any, jax.Array, CholAfqmcCtx, int], Any
     ]  # (w, field, ctx, n_terms)->w
 
 
@@ -56,7 +56,7 @@ def _as_total_rdm1_restricted(dm: jax.Array) -> jax.Array:
     return dm
 
 
-def _mf_shifts(ham_data: ham_chol, trial_rdm1: jax.Array) -> jax.Array:
+def _mf_shifts(ham_data: HamChol, trial_rdm1: jax.Array) -> jax.Array:
     dm = trial_rdm1
     if ham_data.basis == "restricted":
         dm = _as_total_rdm1_restricted(dm)
@@ -75,8 +75,8 @@ def _make_vhs_split_flat(*, chol_flat: jax.Array, x: jax.Array, n: int) -> jax.A
 
 
 def _build_prop_ctx(
-    ham_data: ham_chol, trial_rdm1: jax.Array, dt: float
-) -> chol_afqmc_ctx:
+    ham_data: HamChol, trial_rdm1: jax.Array, dt: float
+) -> CholAfqmcCtx:
     dt_a = jnp.array(dt)
     sqrt_dt = jnp.sqrt(dt_a)
 
@@ -94,7 +94,7 @@ def _build_prop_ctx(
         h1_eff = h1_eff - v0m - v1m
 
     exp_h1_half = _build_exp_h1_half_from_h1(h1_eff, dt_a)
-    return chol_afqmc_ctx(
+    return CholAfqmcCtx(
         dt=dt_a,
         sqrt_dt=sqrt_dt,
         exp_h1_half=exp_h1_half,
@@ -103,12 +103,12 @@ def _build_prop_ctx(
     )
 
 
-def _apply_one_body_half_array(w: jax.Array, prop_ctx: chol_afqmc_ctx) -> jax.Array:
+def _apply_one_body_half_array(w: jax.Array, prop_ctx: CholAfqmcCtx) -> jax.Array:
     return prop_ctx.exp_h1_half @ w
 
 
 def _apply_one_body_half_unrestricted(
-    w_ud: Tuple[jax.Array, jax.Array], prop_ctx: chol_afqmc_ctx
+    w_ud: Tuple[jax.Array, jax.Array], prop_ctx: CholAfqmcCtx
 ) -> Tuple[jax.Array, jax.Array]:
     wu, wd = w_ud
     e = prop_ctx.exp_h1_half
@@ -116,7 +116,7 @@ def _apply_one_body_half_unrestricted(
 
 
 def _apply_one_body_half_generalized_from_restricted(
-    w: jax.Array, prop_ctx: chol_afqmc_ctx, *, norb: int
+    w: jax.Array, prop_ctx: CholAfqmcCtx, *, norb: int
 ) -> jax.Array:
     e = prop_ctx.exp_h1_half
     top = e @ w[:norb, :]
@@ -127,7 +127,7 @@ def _apply_one_body_half_generalized_from_restricted(
 def _apply_two_body_array(
     w: jax.Array,
     field: jax.Array,
-    prop_ctx: chol_afqmc_ctx,
+    prop_ctx: CholAfqmcCtx,
     n_terms: int,
     *,
     make_vhs: Callable[[jax.Array], jax.Array],
@@ -140,7 +140,7 @@ def _apply_two_body_array(
 def _apply_two_body_unrestricted(
     w_ud: Tuple[jax.Array, jax.Array],
     field: jax.Array,
-    prop_ctx: chol_afqmc_ctx,
+    prop_ctx: CholAfqmcCtx,
     n_terms: int,
     *,
     make_vhs: Callable[[jax.Array], jax.Array],
@@ -157,7 +157,7 @@ def _apply_two_body_unrestricted(
 def _apply_two_body_generalized_from_restricted(
     w: jax.Array,
     field: jax.Array,
-    prop_ctx: chol_afqmc_ctx,
+    prop_ctx: CholAfqmcCtx,
     n_terms: int,
     *,
     make_vhs: Callable[[jax.Array], jax.Array],
@@ -173,7 +173,7 @@ def _apply_two_body_generalized_from_restricted(
 def _apply_trotter_r(
     w: jax.Array,
     field: jax.Array,
-    prop_ctx: chol_afqmc_ctx,
+    prop_ctx: CholAfqmcCtx,
     n_terms: int,
     *,
     make_vhs: Callable[[jax.Array], jax.Array],
@@ -186,7 +186,7 @@ def _apply_trotter_r(
 def _apply_trotter_u(
     w_ud: Tuple[jax.Array, jax.Array],
     field: jax.Array,
-    prop_ctx: chol_afqmc_ctx,
+    prop_ctx: CholAfqmcCtx,
     n_terms: int,
     *,
     make_vhs: Callable[[jax.Array], jax.Array],
@@ -199,7 +199,7 @@ def _apply_trotter_u(
 def _apply_trotter_g_from_restricted(
     w: jax.Array,
     field: jax.Array,
-    prop_ctx: chol_afqmc_ctx,
+    prop_ctx: CholAfqmcCtx,
     n_terms: int,
     *,
     make_vhs: Callable[[jax.Array], jax.Array],
@@ -212,7 +212,7 @@ def _apply_trotter_g_from_restricted(
     return _apply_one_body_half_generalized_from_restricted(w2, prop_ctx, norb=norb)
 
 
-def make_trotter_ops(ham_data: ham_chol, walker_kind: str) -> trotter_ops:
+def make_trotter_ops(ham_data: HamChol, walker_kind: str) -> TrotterOps:
     walker_kind = walker_kind.lower()
     nf = int(ham_data.chol.shape[0])
 
@@ -235,20 +235,20 @@ def make_trotter_ops(ham_data: ham_chol, walker_kind: str) -> trotter_ops:
             apply_trotter = lambda w, f, ctx, n_terms, mv=make_vhs: _apply_trotter_r(
                 w, f, ctx, n_terms, make_vhs=mv
             )
-            return trotter_ops(n_fields_, apply_trotter)
+            return TrotterOps(n_fields_, apply_trotter)
 
         if walker_kind == "unrestricted":
             apply_trotter = lambda w, f, ctx, n_terms, mv=make_vhs: _apply_trotter_u(
                 w, f, ctx, n_terms, make_vhs=mv
             )
-            return trotter_ops(n_fields_, apply_trotter)
+            return TrotterOps(n_fields_, apply_trotter)
 
         if walker_kind == "generalized":
             norb = int(ham_data.chol.shape[1])
             apply_trotter = lambda w, f, ctx, n_terms, mv=make_vhs, norb=norb: _apply_trotter_g_from_restricted(
                 w, f, ctx, n_terms, make_vhs=mv, norb=norb
             )
-            return trotter_ops(n_fields_, apply_trotter)
+            return TrotterOps(n_fields_, apply_trotter)
 
         raise ValueError(f"unknown walker_kind: {walker_kind}")
 
@@ -256,4 +256,4 @@ def make_trotter_ops(ham_data: ham_chol, walker_kind: str) -> trotter_ops:
     apply_trotter = lambda w, f, ctx, n_terms, mv=make_vhs: _apply_trotter_r(
         w, f, ctx, n_terms, make_vhs=mv
     )
-    return trotter_ops(n_fields_, apply_trotter)
+    return TrotterOps(n_fields_, apply_trotter)

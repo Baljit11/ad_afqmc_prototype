@@ -2,12 +2,12 @@ import jax
 import jax.numpy as jnp
 import pytest
 
-from ad_afqmc_prototype.core.ops import meas_ops, trial_ops
-from ad_afqmc_prototype.core.system import system
-from ad_afqmc_prototype.ham.chol import ham_chol
+from ad_afqmc_prototype.core.ops import MeasOps, TrialOps
+from ad_afqmc_prototype.core.system import System
+from ad_afqmc_prototype.ham.chol import HamChol
 from ad_afqmc_prototype.prop.afqmc import afqmc_step
 from ad_afqmc_prototype.prop.chol_afqmc_ops import _build_prop_ctx, make_trotter_ops
-from ad_afqmc_prototype.prop.types import prop_state, qmc_params
+from ad_afqmc_prototype.prop.types import PropState, QmcParams
 
 
 def _make_dummy_trial_ops():
@@ -17,7 +17,7 @@ def _make_dummy_trial_ops():
     def overlap(walker, trial_data):
         return jnp.asarray(1.0 + 0.0j)
 
-    return trial_ops(overlap=overlap, get_rdm1=get_rdm1)
+    return TrialOps(overlap=overlap, get_rdm1=get_rdm1)
 
 
 def _make_dummy_meas_ops():
@@ -31,7 +31,7 @@ def _make_dummy_meas_ops():
         n_fields = ham_data.chol.shape[0]
         return jnp.zeros((n_fields,), dtype=walker.dtype)
 
-    return meas_ops(
+    return MeasOps(
         overlap=overlap,
         build_meas_ctx=build_meas_ctx,
         kernels={"force_bias": force_bias_kernel},
@@ -41,15 +41,15 @@ def _make_dummy_meas_ops():
 
 def test_weight_update_matches_h0_prop_and_pop_control_update():
     norb, nocc, nw, n_fields = 4, 2, 8, 3
-    ham = ham_chol(
+    ham = HamChol(
         basis="restricted",
         h0=jnp.asarray(1.0),
         h1=jnp.zeros((norb, norb)),
         chol=jnp.zeros((n_fields, norb, norb)),
     )
-    sys = system(norb=norb, nelec=(nocc, nocc), walker_kind="restricted")
+    sys = System(norb=norb, nelec=(nocc, nocc), walker_kind="restricted")
 
-    params = qmc_params(
+    params = QmcParams(
         dt=0.2,
         n_chunks=2,
         n_exp_terms=4,
@@ -61,7 +61,7 @@ def test_weight_update_matches_h0_prop_and_pop_control_update():
     trial_data = {"rdm1": jnp.zeros((norb, norb))}
 
     walkers = jnp.ones((nw, norb, nocc), dtype=jnp.complex64)
-    state = prop_state(
+    state = PropState(
         walkers=walkers,
         weights=jnp.ones((nw,)),
         overlaps=jnp.ones((nw,), dtype=jnp.complex64),
@@ -101,11 +101,11 @@ def test_step_matches_manual_walker_propagation_and_is_chunk_invariant():
     key, sub = jax.random.split(key)
     chol = 0.02 * jax.random.normal(sub, (n_fields, norb, norb))
 
-    ham = ham_chol(basis="restricted", h0=jnp.asarray(0.0), h1=h1, chol=chol)
-    sys = system(norb=norb, nelec=(nocc, nocc), walker_kind="restricted")
+    ham = HamChol(basis="restricted", h0=jnp.asarray(0.0), h1=h1, chol=chol)
+    sys = System(norb=norb, nelec=(nocc, nocc), walker_kind="restricted")
 
-    params1 = qmc_params(dt=0.1, n_chunks=1, n_exp_terms=6)
-    params2 = qmc_params(dt=0.1, n_chunks=3, n_exp_terms=6)
+    params1 = QmcParams(dt=0.1, n_chunks=1, n_exp_terms=6)
+    params2 = QmcParams(dt=0.1, n_chunks=3, n_exp_terms=6)
 
     trial_ops_ = _make_dummy_trial_ops()
     meas_ops = _make_dummy_meas_ops()
@@ -115,7 +115,7 @@ def test_step_matches_manual_walker_propagation_and_is_chunk_invariant():
     walkers = jax.random.normal(sub, (nw, norb, nocc)).astype(
         jnp.complex64
     ) + 1.0j * jax.random.normal(sub, (nw, norb, nocc)).astype(jnp.complex64)
-    state = prop_state(
+    state = PropState(
         walkers=walkers,
         weights=jnp.ones((nw,)),
         overlaps=jnp.ones((nw,), dtype=jnp.complex64),

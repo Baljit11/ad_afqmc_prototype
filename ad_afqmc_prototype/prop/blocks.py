@@ -7,27 +7,27 @@ import jax.numpy as jnp
 from jax import lax
 
 from .. import walkers as wk
-from ..core.ops import k_energy, meas_ops
-from ..core.system import system
-from .types import prop_ops, prop_state, qmc_params
+from ..core.ops import MeasOps, k_energy
+from ..core.system import System
+from .types import PropOps, PropState, QmcParams
 
 
-class block_obs(NamedTuple):
+class BlockObs(NamedTuple):
     scalars: dict[str, jax.Array]
 
 
 def block(
-    state: prop_state,
+    state: PropState,
     *,
-    sys: system,
-    params: qmc_params,
+    sys: System,
+    params: QmcParams,
     ham_data: Any,
     trial_data: Any,
-    meas_ops: meas_ops,
+    meas_ops: MeasOps,
     meas_ctx: Any,
-    prop_ops: prop_ops,
+    prop_ops: PropOps,
     prop_ctx: Any,
-) -> tuple[prop_state, block_obs]:
+) -> tuple[PropState, BlockObs]:
     """
     propagation + measurement
     """
@@ -41,7 +41,7 @@ def block(
         meas_ctx=meas_ctx,
     )
 
-    def _scan_step(carry: prop_state, _x: Any):
+    def _scan_step(carry: PropState, _x: Any):
         carry = step(carry)
         return carry, None
 
@@ -92,5 +92,5 @@ def block(
         rng_key=key,
     )
 
-    obs = block_obs(scalars={"energy": e_block, "weight": w_sum})
+    obs = BlockObs(scalars={"energy": e_block, "weight": w_sum})
     return state, obs

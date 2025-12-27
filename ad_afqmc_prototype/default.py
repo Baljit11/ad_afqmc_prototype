@@ -3,13 +3,13 @@ import numpy as np
 from pyscf import ao2mo
 
 from . import driver, integrals
-from .core import system
-from .ham.chol import ham_chol
+from .core.system import System
+from .ham.chol import HamChol
 from .meas.rhf import make_rhf_meas_ops
 from .prop.afqmc import make_prop_ops
 from .prop.blocks import block
-from .prop.types import qmc_params
-from .trial.rhf import make_rhf_trial_ops, rhf_trial
+from .prop.types import QmcParams
+from .trial.rhf import RhfTrial, make_rhf_trial_ops
 
 
 class Rhf:
@@ -21,13 +21,13 @@ class Rhf:
         eri = ao2mo.restore(4, eri, mol.nao)
         chol = integrals.modified_cholesky(eri, max_error=1e-6)
 
-        sys = system.system(norb=mol.nao, nelec=mol.nelec, walker_kind="restricted")
-        ham_data = ham_chol(h0=jnp.array(h0), h1=jnp.array(h1), chol=jnp.array(chol))
-        self.trial_data = rhf_trial(jnp.eye(mol.nao, mol.nelectron // 2))
+        sys = System(norb=mol.nao, nelec=mol.nelec, walker_kind="restricted")
+        ham_data = HamChol(h0=jnp.array(h0), h1=jnp.array(h1), chol=jnp.array(chol))
+        self.trial_data = RhfTrial(jnp.eye(mol.nao, mol.nelectron // 2))
         self.trial_ops = make_rhf_trial_ops(sys=sys)
         self.meas_ops = make_rhf_meas_ops(sys=sys)
         self.prop_ops = make_prop_ops(ham_data, sys.walker_kind)
-        self.params = qmc_params(
+        self.params = QmcParams(
             n_eql_blocks=20, n_blocks=200, seed=np.random.randint(0, int(1e6))
         )
         self.block_fn = block

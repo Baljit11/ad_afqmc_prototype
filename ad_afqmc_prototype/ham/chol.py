@@ -11,7 +11,7 @@ ham_basis = Literal["restricted", "generalized"]
 
 @tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class ham_chol:
+class HamChol:
     """
     cholesky hamiltonian.
 
@@ -61,5 +61,5 @@ class ham_chol:
         return cls(h0=h0, h1=h1, chol=chol, basis=basis)
 
 
-def n_fields(ham: ham_chol) -> int:
+def n_fields(ham: HamChol) -> int:
     return int(ham.chol.shape[0])

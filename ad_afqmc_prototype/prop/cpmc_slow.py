@@ -7,32 +7,32 @@ import jax.numpy as jnp
 from jax import lax
 
 from .. import walkers as wk
-from ..core.ops import k_energy, meas_ops, trial_ops
-from ..core.system import system
-from ..ham.hubbard import ham_hubbard
+from ..core.ops import MeasOps, TrialOps, k_energy
+from ..core.system import System
+from ..ham.hubbard import HamHubbard
 from ..walkers import init_walkers
 from .hubbard_cpmc_ops import (
     _build_prop_ctx,
-    hubbard_cpmc_ctx,
-    hubbard_cpmc_ops,
+    HubbardCpmcCtx,
+    HubbardCpmcOps,
     make_hubbard_cpmc_ops,
 )
-from .types import prop_ops, prop_state, qmc_params
+from .types import PropOps, PropState, QmcParams
 
 
 def init_prop_state(
     *,
-    sys: system,
+    sys: System,
     n_walkers: int,
     seed: int,
-    ham_data: ham_hubbard,
-    trial_ops: trial_ops,
+    ham_data: HamHubbard,
+    trial_ops: TrialOps,
     trial_data: Any,
-    meas_ops: meas_ops,
-    params: qmc_params,
+    meas_ops: MeasOps,
+    params: QmcParams,
     initial_walkers: Any | None = None,
     initial_e_estimate: jax.Array | None = None,
-) -> prop_state:
+) -> PropState:
     """
     Initialize CPMC propagation state.
     """
@@ -75,7 +75,7 @@ def init_prop_state(
 
     node_encounters = jnp.asarray(0)
 
-    return prop_state(
+    return PropState(
         walkers=initial_walkers,
         weights=weights,
         overlaps=overlaps,
@@ -87,14 +87,14 @@ def init_prop_state(
 
 
 def cpmc_step(
-    state: prop_state,
+    state: PropState,
     *,
-    params: qmc_params,
+    params: QmcParams,
     trial_data: Any,
-    meas_ops: meas_ops,
-    cpmc_ops: hubbard_cpmc_ops,
-    prop_ctx: hubbard_cpmc_ctx,
-) -> prop_state:
+    meas_ops: MeasOps,
+    cpmc_ops: HubbardCpmcOps,
+    prop_ctx: HubbardCpmcCtx,
+) -> PropState:
     """
     One CPMC step with discrete spin HS fields, implemented without fast updates.
     Requires only overlap for a single walker.
@@ -202,7 +202,7 @@ def cpmc_step(
 
     node_encounters_new = state.node_encounters + node_encounters_step
 
-    return prop_state(
+    return PropState(
         walkers=walkers,
         weights=weights,
         overlaps=overlaps_new,
@@ -213,19 +213,19 @@ def cpmc_step(
     )
 
 
-def make_prop_ops(ham_data: ham_hubbard, walker_kind: str) -> prop_ops:
+def make_prop_ops(ham_data: HamHubbard, walker_kind: str) -> PropOps:
     cpmc_ops = make_hubbard_cpmc_ops(ham_data, walker_kind)
 
     def step(
-        state: prop_state,
+        state: PropState,
         *,
-        params: qmc_params,
+        params: QmcParams,
         ham_data: Any,
         trial_data: Any,
-        meas_ops: meas_ops,
+        meas_ops: MeasOps,
         meas_ctx: Any,
-        prop_ctx: hubbard_cpmc_ctx,
-    ) -> prop_state:
+        prop_ctx: HubbardCpmcCtx,
+    ) -> PropState:
         return cpmc_step(
             state,
             params=params,
@@ -236,13 +236,13 @@ def make_prop_ops(ham_data: ham_hubbard, walker_kind: str) -> prop_ops:
         )
 
     def build_prop_ctx(
-        ham_data: ham_hubbard,
+        ham_data: HamHubbard,
         trial_data: Any,
-        params: qmc_params,
-    ) -> hubbard_cpmc_ctx:
+        params: QmcParams,
+    ) -> HubbardCpmcCtx:
         return _build_prop_ctx(ham_data, params.dt)
 
-    return prop_ops(
+    return PropOps(
         init_prop_state=init_prop_state,
         build_prop_ctx=build_prop_ctx,
         step=step,

@@ -7,11 +7,11 @@ import jax.numpy as jnp
 import pytest
 
 from ad_afqmc_prototype.core.ops import k_energy, k_force_bias
-from ad_afqmc_prototype.core.system import system
-from ad_afqmc_prototype.ham.chol import ham_chol
+from ad_afqmc_prototype.core.system import System
+from ad_afqmc_prototype.ham.chol import HamChol
 from ad_afqmc_prototype.meas.auto import make_auto_meas_ops
 from ad_afqmc_prototype.meas.ghf import make_ghf_meas_ops_chol
-from ad_afqmc_prototype.trial.ghf import ghf_trial, make_ghf_trial_ops
+from ad_afqmc_prototype.trial.ghf import GhfTrial, make_ghf_trial_ops
 
 
 def _rand_orthonormal_cols(key, nrow, ncol, dtype=jnp.complex128):
@@ -26,9 +26,9 @@ def _rand_orthonormal_cols(key, nrow, ncol, dtype=jnp.complex128):
     return q.astype(dtype)
 
 
-def _make_random_ham_chol(key, norb, n_chol, dtype=jnp.float64) -> ham_chol:
+def _make_random_ham_chol(key, norb, n_chol, dtype=jnp.float64) -> HamChol:
     """
-    Build a small 'restricted' ham_chol with:
+    Build a small 'restricted' HamChol with:
       - symmetric real h1
       - symmetric real chol[g]
     """
@@ -42,16 +42,16 @@ def _make_random_ham_chol(key, norb, n_chol, dtype=jnp.float64) -> ham_chol:
 
     h0 = jax.random.normal(k3, (), dtype=dtype)
 
-    return ham_chol(basis="restricted", h0=h0, h1=h1, chol=chol)
+    return HamChol(basis="restricted", h0=h0, h1=h1, chol=chol)
 
 
-def _make_ghf_trial(key, norb, nup, ndn, dtype=jnp.complex128) -> ghf_trial:
+def _make_ghf_trial(key, norb, nup, ndn, dtype=jnp.complex128) -> GhfTrial:
     ne = nup + ndn
     mo = _rand_orthonormal_cols(key, 2 * norb, ne, dtype=dtype)
-    return ghf_trial(mo_coeff=mo)
+    return GhfTrial(mo_coeff=mo)
 
 
-def _make_walkers(key, sys: system, dtype=jnp.complex128):
+def _make_walkers(key, sys: System, dtype=jnp.complex128):
     norb, nup, ndn = sys.norb, sys.nup, sys.ndn
     wk = sys.walker_kind.lower()
 
@@ -83,7 +83,7 @@ def _make_walkers(key, sys: system, dtype=jnp.complex128):
     ],
 )
 def test_auto_force_bias_matches_manual_ghf(walker_kind, norb, nup, ndn, n_chol):
-    sys = system(norb=norb, nelec=(nup, ndn), walker_kind=walker_kind)
+    sys = System(norb=norb, nelec=(nup, ndn), walker_kind=walker_kind)
 
     key = jax.random.PRNGKey(0)
     k_ham, k_trial, k_w = jax.random.split(key, 3)
@@ -119,7 +119,7 @@ def test_auto_force_bias_matches_manual_ghf(walker_kind, norb, nup, ndn, n_chol)
     ],
 )
 def test_auto_energy_matches_manual_ghf(walker_kind, norb, nup, ndn, n_chol):
-    sys = system(norb=norb, nelec=(nup, ndn), walker_kind=walker_kind)
+    sys = System(norb=norb, nelec=(nup, ndn), walker_kind=walker_kind)
 
     key = jax.random.PRNGKey(1)
     k_ham, k_trial, k_w = jax.random.split(key, 3)

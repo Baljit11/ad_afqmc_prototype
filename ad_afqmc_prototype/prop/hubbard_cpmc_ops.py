@@ -8,12 +8,12 @@ import jax.numpy as jnp
 import jax.scipy as jsp
 from jax import tree_util
 
-from ..ham.hubbard import ham_hubbard
+from ..ham.hubbard import HamHubbard
 
 
 @tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class hubbard_cpmc_ctx:
+class HubbardCpmcCtx:
     """
     Propagation context for (slow) CPMC.
 
@@ -38,13 +38,13 @@ class hubbard_cpmc_ctx:
         return cls(dt=dt, exp_h1_half=exp_h1_half, hs_constant=hs_constant)
 
 
-class hubbard_cpmc_ops(NamedTuple):
+class HubbardCpmcOps(NamedTuple):
     """
     CPMC propagation ops.
     """
 
     n_sites: Callable[[], int]
-    apply_one_body_half: Callable[[Any, hubbard_cpmc_ctx], Any]
+    apply_one_body_half: Callable[[Any, HubbardCpmcCtx], Any]
 
 
 def _build_exp_h1_half(h1: jax.Array, dt: jax.Array) -> jax.Array:
@@ -62,7 +62,7 @@ def _build_hs_constant(u: jax.Array, dt: jax.Array) -> jax.Array:
 
 
 def _apply_one_body_half_unrestricted(
-    walker: tuple[jax.Array, jax.Array], prop_ctx: hubbard_cpmc_ctx
+    walker: tuple[jax.Array, jax.Array], prop_ctx: HubbardCpmcCtx
 ) -> tuple[jax.Array, jax.Array]:
     """
     Apply one body half step to a batch of unrestricted Hubbard walkers.
@@ -75,15 +75,15 @@ def _apply_one_body_half_unrestricted(
     return (w_up, w_dn)
 
 
-def _build_prop_ctx(ham_data: ham_hubbard, dt: float) -> hubbard_cpmc_ctx:
+def _build_prop_ctx(ham_data: HamHubbard, dt: float) -> HubbardCpmcCtx:
     dt_a = jnp.asarray(dt)
     u_a = jnp.asarray(ham_data.u)
     exp_h1_half = _build_exp_h1_half(ham_data.h1, dt_a)  # (n,n)
     hs_constant = _build_hs_constant(u_a, dt_a)  # (2,2)
-    return hubbard_cpmc_ctx(dt=dt_a, exp_h1_half=exp_h1_half, hs_constant=hs_constant)
+    return HubbardCpmcCtx(dt=dt_a, exp_h1_half=exp_h1_half, hs_constant=hs_constant)
 
 
-def make_hubbard_cpmc_ops(ham_data: ham_hubbard, walker_kind: str) -> hubbard_cpmc_ops:
+def make_hubbard_cpmc_ops(ham_data: HamHubbard, walker_kind: str) -> HubbardCpmcOps:
     assert (
         walker_kind.lower() == "unrestricted"
     ), "only unrestricted walkers supported for hubbard_cpmc_ops"
@@ -92,7 +92,7 @@ def make_hubbard_cpmc_ops(ham_data: ham_hubbard, walker_kind: str) -> hubbard_cp
     def n_sites() -> int:
         return n
 
-    return hubbard_cpmc_ops(
+    return HubbardCpmcOps(
         n_sites=n_sites,
         apply_one_body_half=_apply_one_body_half_unrestricted,
     )

@@ -7,10 +7,10 @@ from typing import Any, Callable
 import jax
 import jax.numpy as jnp
 
-from .core.ops import meas_ops, trial_ops
-from .core.system import system
-from .prop.blocks import block_obs
-from .prop.types import prop_ops, prop_state, qmc_params
+from .core.ops import MeasOps, TrialOps
+from .core.system import System
+from .prop.blocks import BlockObs
+from .prop.types import PropOps, PropState, QmcParams
 from .stat_utils import blocking_analysis_ratio, reject_outliers
 
 print = partial(print, flush=True)
@@ -27,8 +27,8 @@ def make_run_blocks(block):  # block: state -> (state, obs)
 
     @partial(jax.jit, static_argnames=("n_blocks",))
     def run_blocks(
-        state0: prop_state, *, n_blocks: int
-    ) -> tuple[prop_state, jax.Array, jax.Array]:
+        state0: PropState, *, n_blocks: int
+    ) -> tuple[PropState, jax.Array, jax.Array]:
         stateN, (e, w) = jax.lax.scan(one_block, state0, xs=None, length=n_blocks)
         return stateN, e, w
 
@@ -37,14 +37,14 @@ def make_run_blocks(block):  # block: state -> (state, obs)
 
 def run_qmc_energy(
     *,
-    sys: system,
-    params: qmc_params,
+    sys: System,
+    params: QmcParams,
     ham_data: Any,
     trial_data: Any,
-    meas_ops: meas_ops,
-    trial_ops: trial_ops,
-    prop_ops: prop_ops,
-    block_fn: Callable[..., tuple[prop_state, block_obs]],
+    meas_ops: MeasOps,
+    trial_ops: TrialOps,
+    prop_ops: PropOps,
+    block_fn: Callable[..., tuple[PropState, BlockObs]],
 ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
     """
     equilibration blocks then sampling blocks.

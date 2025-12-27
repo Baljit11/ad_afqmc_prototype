@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 from jax import lax
 
-from .core.system import system
+from .core.system import System
 from .core.typing import walkers
 
 
@@ -16,7 +16,7 @@ def _natorbs(dm: jax.Array, n_occ: int) -> jax.Array:
     return vecs[:, :n_occ]
 
 
-def init_walkers(sys: system, rdm1: jax.Array, n_walkers: int) -> walkers:
+def init_walkers(sys: System, rdm1: jax.Array, n_walkers: int) -> walkers:
     """
     Initialize walkers from natural orbitals of a trial rdm1.
     """

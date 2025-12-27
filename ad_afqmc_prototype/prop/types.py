@@ -5,11 +5,11 @@ from typing import Any, Callable, NamedTuple, Protocol
 
 import jax
 
-from ..core.ops import meas_ops
-from ..core.system import system
+from ..core.ops import MeasOps
+from ..core.system import System
 
 
-class prop_state(NamedTuple):
+class PropState(NamedTuple):
     walkers: Any
     weights: jax.Array
     overlaps: jax.Array
@@ -20,7 +20,7 @@ class prop_state(NamedTuple):
 
 
 @dataclass(frozen=True)
-class qmc_params:
+class QmcParams:
     dt: float = 0.005
     n_chunks: int = 1
     n_exp_terms: int = 6
@@ -35,43 +35,43 @@ class qmc_params:
     seed: int = 42
 
 
-class step_kernel(Protocol):
+class StepKernel(Protocol):
 
     def __call__(
         self,
-        state: prop_state,
+        state: PropState,
         *,
-        params: qmc_params,
+        params: QmcParams,
         ham_data: Any,
         trial_data: Any,
-        meas_ops: meas_ops,
+        meas_ops: MeasOps,
         meas_ctx: Any,
         prop_ctx: Any,
-    ) -> prop_state: ...
+    ) -> PropState: ...
 
 
-class init_prop_state(Protocol):
+class InitPropState(Protocol):
 
     def __call__(
         self,
         *,
-        sys: system,
+        sys: System,
         n_walkers: int,
         seed: int,
         ham_data: Any,
         trial_ops: Any,
         trial_data: Any,
-        meas_ops: meas_ops,
-        params: qmc_params,
+        meas_ops: MeasOps,
+        params: QmcParams,
         initial_walkers: Any | None = None,
         initial_e_estimate: jax.Array | None = None,
-    ) -> prop_state: ...
+    ) -> PropState: ...
 
 
 @dataclass(frozen=True)
-class prop_ops:
-    init_prop_state: init_prop_state
+class PropOps:
+    init_prop_state: InitPropState
     build_prop_ctx: Callable[
-        [Any, Any, qmc_params], Any
+        [Any, Any, QmcParams], Any
     ]  # (ham_data, trial_data, params) -> prop_ctx
-    step: step_kernel
+    step: StepKernel

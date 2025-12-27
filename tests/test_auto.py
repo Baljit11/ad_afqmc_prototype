@@ -7,11 +7,11 @@ import jax.numpy as jnp
 import pytest
 
 from ad_afqmc_prototype.core.ops import k_energy, k_force_bias
-from ad_afqmc_prototype.core.system import system
-from ad_afqmc_prototype.ham.chol import ham_chol
+from ad_afqmc_prototype.core.system import System
+from ad_afqmc_prototype.ham.chol import HamChol
 from ad_afqmc_prototype.meas.auto import make_auto_meas_ops
 from ad_afqmc_prototype.meas.rhf import make_rhf_meas_ops
-from ad_afqmc_prototype.trial.rhf import make_rhf_trial_ops, rhf_trial
+from ad_afqmc_prototype.trial.rhf import RhfTrial, make_rhf_trial_ops
 
 
 def _rand_orthonormal_cols(key, nrow, ncol, dtype=jnp.complex128):
@@ -26,9 +26,9 @@ def _rand_orthonormal_cols(key, nrow, ncol, dtype=jnp.complex128):
     return q.astype(dtype)
 
 
-def _make_random_ham_chol(key, norb, n_chol, dtype=jnp.float64) -> ham_chol:
+def _make_random_ham_chol(key, norb, n_chol, dtype=jnp.float64) -> HamChol:
     """
-    Build a small 'restricted' ham_chol with:
+    Build a small 'restricted' HamChol with:
       - symmetric real h1
       - symmetric real chol[g]
     """
@@ -42,10 +42,10 @@ def _make_random_ham_chol(key, norb, n_chol, dtype=jnp.float64) -> ham_chol:
 
     h0 = jax.random.normal(k3, (), dtype=dtype)
 
-    return ham_chol(basis="restricted", h0=h0, h1=h1, chol=chol)
+    return HamChol(basis="restricted", h0=h0, h1=h1, chol=chol)
 
 
-def _make_walkers(key, sys: system, dtype=jnp.complex128):
+def _make_walkers(key, sys: System, dtype=jnp.complex128):
     norb, nocc = sys.norb, sys.nup
     wk = sys.walker_kind.lower()
 
@@ -72,13 +72,13 @@ def test_auto_force_bias_matches_manual_rhf(walker_kind):
     nocc = 2
     n_chol = 7
 
-    sys = system(norb=norb, nelec=(nocc, nocc), walker_kind=walker_kind)
+    sys = System(norb=norb, nelec=(nocc, nocc), walker_kind=walker_kind)
 
     key = jax.random.PRNGKey(0)
     k_ham, k_trial, k_w = jax.random.split(key, 3)
 
     ham = _make_random_ham_chol(k_ham, norb=norb, n_chol=n_chol)
-    trial = rhf_trial(mo_coeff=_rand_orthonormal_cols(k_trial, norb, nocc))
+    trial = RhfTrial(mo_coeff=_rand_orthonormal_cols(k_trial, norb, nocc))
 
     t_ops = make_rhf_trial_ops(sys)
     meas_manual = make_rhf_meas_ops(sys)
@@ -104,13 +104,13 @@ def test_auto_energy_matches_manual_rhf(walker_kind):
     nocc = 2
     n_chol = 7
 
-    sys = system(norb=norb, nelec=(nocc, nocc), walker_kind=walker_kind)
+    sys = System(norb=norb, nelec=(nocc, nocc), walker_kind=walker_kind)
 
     key = jax.random.PRNGKey(1)
     k_ham, k_trial, k_w = jax.random.split(key, 3)
 
     ham = _make_random_ham_chol(k_ham, norb=norb, n_chol=n_chol)
-    trial = rhf_trial(mo_coeff=_rand_orthonormal_cols(k_trial, norb, nocc))
+    trial = RhfTrial(mo_coeff=_rand_orthonormal_cols(k_trial, norb, nocc))
 
     t_ops = make_rhf_trial_ops(sys)
     meas_manual = make_rhf_meas_ops(sys)
@@ -139,13 +139,13 @@ def test_auto_force_bias_matches_manual_rhf_generalized():
     nocc = 2
     n_chol = 7
 
-    sys = system(norb=norb, nelec=(nocc, nocc), walker_kind=walker_kind)
+    sys = System(norb=norb, nelec=(nocc, nocc), walker_kind=walker_kind)
 
     key = jax.random.PRNGKey(2)
     k_ham, k_trial, k_w = jax.random.split(key, 3)
 
     ham = _make_random_ham_chol(k_ham, norb=norb, n_chol=n_chol)
-    trial = rhf_trial(mo_coeff=_rand_orthonormal_cols(k_trial, norb, nocc))
+    trial = RhfTrial(mo_coeff=_rand_orthonormal_cols(k_trial, norb, nocc))
 
     t_ops = make_rhf_trial_ops(sys)
     meas_manual = make_rhf_meas_ops(sys)

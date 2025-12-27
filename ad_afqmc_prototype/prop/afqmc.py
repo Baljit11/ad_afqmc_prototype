@@ -6,32 +6,32 @@ import jax
 import jax.numpy as jnp
 
 from .. import walkers as wk
-from ..core.ops import k_energy, k_force_bias, meas_ops, trial_ops
-from ..core.system import system
-from ..ham.chol import ham_chol
+from ..core.ops import MeasOps, TrialOps, k_energy, k_force_bias
+from ..core.system import System
+from ..ham.chol import HamChol
 from ..walkers import init_walkers
 from .chol_afqmc_ops import (
     _build_prop_ctx,
-    chol_afqmc_ctx,
+    CholAfqmcCtx,
     make_trotter_ops,
-    trotter_ops,
+    TrotterOps,
 )
-from .types import prop_ops, prop_state, qmc_params
+from .types import PropOps, PropState, QmcParams
 
 
 def init_prop_state(
     *,
-    sys: system,
+    sys: System,
     n_walkers: int,
     seed: int,
-    ham_data: ham_chol,
-    trial_ops: trial_ops,
+    ham_data: HamChol,
+    trial_ops: TrialOps,
     trial_data: Any,
-    meas_ops: meas_ops,
-    params: qmc_params,
+    meas_ops: MeasOps,
+    params: QmcParams,
     initial_walkers: Any | None = None,
     initial_e_estimate: jax.Array | None = None,
-) -> prop_state:
+) -> PropState:
     """
     Initialize AFQMC propagation state.
     """
@@ -68,7 +68,7 @@ def init_prop_state(
 
     node_encounters = jnp.asarray(0)
 
-    return prop_state(
+    return PropState(
         walkers=initial_walkers,
         weights=weights,
         overlaps=overlaps,
@@ -80,16 +80,16 @@ def init_prop_state(
 
 
 def afqmc_step(
-    state: prop_state,
+    state: PropState,
     *,
-    params: qmc_params,
-    ham_data: ham_chol,
+    params: QmcParams,
+    ham_data: HamChol,
     trial_data: Any,
-    meas_ops: meas_ops,
-    trotter_ops: trotter_ops,
-    prop_ctx: chol_afqmc_ctx,
+    meas_ops: MeasOps,
+    trotter_ops: TrotterOps,
+    prop_ctx: CholAfqmcCtx,
     meas_ctx: Any,
-) -> prop_state:
+) -> PropState:
 
     key, subkey = jax.random.split(state.rng_key)
     nw = wk.n_walkers(state.walkers)
@@ -144,7 +144,7 @@ def afqmc_step(
     avg_w = jnp.clip(jnp.mean(weights_new), min=1.0e-300)
     pop_shift_new = state.e_estimate - damping * (jnp.log(avg_w) / prop_ctx.dt)
 
-    return prop_state(
+    return PropState(
         walkers=walkers_new,
         weights=weights_new,
         overlaps=overlaps_new,
@@ -155,19 +155,19 @@ def afqmc_step(
     )
 
 
-def make_prop_ops(ham_data: ham_chol, walker_kind: str) -> prop_ops:
+def make_prop_ops(ham_data: HamChol, walker_kind: str) -> PropOps:
     trotter_ops = make_trotter_ops(ham_data, walker_kind)
 
     def step(
-        state: prop_state,
+        state: PropState,
         *,
-        params: qmc_params,
+        params: QmcParams,
         ham_data: Any,
         trial_data: Any,
-        meas_ops: meas_ops,
+        meas_ops: MeasOps,
         meas_ctx: Any,
         prop_ctx: Any,
-    ) -> prop_state:
+    ) -> PropState:
         return afqmc_step(
             state,
             params=params,
@@ -180,10 +180,10 @@ def make_prop_ops(ham_data: ham_chol, walker_kind: str) -> prop_ops:
         )
 
     def build_prop_ctx(
-        ham_data: Any, trial_data: Any, params: qmc_params
-    ) -> chol_afqmc_ctx:
+        ham_data: Any, trial_data: Any, params: QmcParams
+    ) -> CholAfqmcCtx:
         return _build_prop_ctx(ham_data, trial_data, params.dt)
 
-    return prop_ops(
+    return PropOps(
         init_prop_state=init_prop_state, build_prop_ctx=build_prop_ctx, step=step
     )

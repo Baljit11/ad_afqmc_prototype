@@ -8,7 +8,7 @@ from jax import tree_util
 
 @tree_util.register_pytree_node_class
 @dataclass(frozen=True)
-class ham_hubbard:
+class HamHubbard:
     """
     Hubbard Hamiltonian data.
 

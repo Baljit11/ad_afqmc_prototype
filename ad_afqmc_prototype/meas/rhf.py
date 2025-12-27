@@ -6,10 +6,10 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
-from ..core.ops import k_energy, k_force_bias, meas_ops
-from ..core.system import system
-from ..ham.chol import ham_chol
-from ..trial.rhf import overlap_g, overlap_r, overlap_u, rhf_trial
+from ..core.ops import MeasOps, k_energy, k_force_bias
+from ..core.system import System
+from ..ham.chol import HamChol
+from ..trial.rhf import RhfTrial, overlap_g, overlap_r, overlap_u
 
 
 def _half_green_from_overlap_matrix(w: jax.Array, ovlp_mat: jax.Array) -> jax.Array:
@@ -20,7 +20,7 @@ def _half_green_from_overlap_matrix(w: jax.Array, ovlp_mat: jax.Array) -> jax.Ar
 
 
 def force_bias_kernel_r(
-    walker: jax.Array, ham_data: Any, meas_ctx: rhf_meas_ctx, trial_data: rhf_trial
+    walker: jax.Array, ham_data: Any, meas_ctx: RhfMeasCtx, trial_data: RhfTrial
 ) -> jax.Array:
     m = trial_data.mo_coeff.conj().T @ walker
     g_half = _half_green_from_overlap_matrix(walker, m)  # (nocc, norb)
@@ -29,7 +29,7 @@ def force_bias_kernel_r(
 
 
 def energy_kernel_r(
-    walker: jax.Array, ham_data: ham_chol, meas_ctx: rhf_meas_ctx, trial_data: rhf_trial
+    walker: jax.Array, ham_data: HamChol, meas_ctx: RhfMeasCtx, trial_data: RhfTrial
 ) -> jax.Array:
     m = trial_data.mo_coeff.conj().T @ walker
     g_half = _half_green_from_overlap_matrix(walker, m)  # (nocc, norb)
@@ -48,8 +48,8 @@ def energy_kernel_r(
 def force_bias_kernel_u(
     walker: tuple[jax.Array, jax.Array],
     ham_data: Any,
-    meas_ctx: rhf_meas_ctx,
-    trial_data: rhf_trial,
+    meas_ctx: RhfMeasCtx,
+    trial_data: RhfTrial,
 ) -> jax.Array:
     wu, wd = walker
     mu = trial_data.mo_coeff.conj().T @ wu
@@ -62,9 +62,9 @@ def force_bias_kernel_u(
 
 def energy_kernel_u(
     walker: tuple[jax.Array, jax.Array],
-    ham_data: ham_chol,
-    meas_ctx: rhf_meas_ctx,
-    trial_data: rhf_trial,
+    ham_data: HamChol,
+    meas_ctx: RhfMeasCtx,
+    trial_data: RhfTrial,
 ) -> jax.Array:
     wu, wd = walker
     mu = trial_data.mo_coeff.conj().T @ wu
@@ -94,7 +94,7 @@ def energy_kernel_u(
 
 
 def force_bias_kernel_g(
-    walker: jax.Array, ham_data: Any, meas_ctx: rhf_meas_ctx, trial_data: rhf_trial
+    walker: jax.Array, ham_data: Any, meas_ctx: RhfMeasCtx, trial_data: RhfTrial
 ) -> jax.Array:
     norb, nocc = trial_data.norb, trial_data.nocc
     cH = trial_data.mo_coeff.conj().T
@@ -110,43 +110,43 @@ def force_bias_kernel_g(
 
 
 @dataclass(frozen=True)
-class rhf_meas_ctx:
+class RhfMeasCtx:
     # half-rotated:
     rot_h1: jax.Array  # (nocc, norb)
     rot_chol: jax.Array  # (n_chol, nocc, norb)
     rot_chol_flat: jax.Array  # (n_chol, nocc*norb)
 
 
-def build_meas_ctx(ham_data: ham_chol, trial_data: rhf_trial) -> rhf_meas_ctx:
+def build_meas_ctx(ham_data: HamChol, trial_data: RhfTrial) -> RhfMeasCtx:
     if ham_data.basis != "restricted":
         raise ValueError(
-            "RHF meas_ops currently assumes ham_chol.basis == 'restricted'."
+            "RHF MeasOps currently assumes HamChol.basis == 'restricted'."
         )
     cH = trial_data.mo_coeff.conj().T  # (nocc, norb)
     rot_h1 = cH @ ham_data.h1  # (nocc, norb)
     rot_chol = jnp.einsum("pi,gij->gpj", cH, ham_data.chol, optimize="optimal")
     rot_chol_flat = rot_chol.reshape(rot_chol.shape[0], -1)
-    return rhf_meas_ctx(rot_h1=rot_h1, rot_chol=rot_chol, rot_chol_flat=rot_chol_flat)
+    return RhfMeasCtx(rot_h1=rot_h1, rot_chol=rot_chol, rot_chol_flat=rot_chol_flat)
 
 
-def make_rhf_meas_ops(sys: system) -> meas_ops:
+def make_rhf_meas_ops(sys: System) -> MeasOps:
     wk = sys.walker_kind.lower()
     if wk == "restricted":
-        return meas_ops(
+        return MeasOps(
             overlap=overlap_r,
             build_meas_ctx=build_meas_ctx,
             kernels={k_force_bias: force_bias_kernel_r, k_energy: energy_kernel_r},
         )
 
     if wk == "unrestricted":
-        return meas_ops(
+        return MeasOps(
             overlap=overlap_u,
             build_meas_ctx=build_meas_ctx,
             kernels={k_force_bias: force_bias_kernel_u, k_energy: energy_kernel_u},
         )
 
     if wk == "generalized":
-        return meas_ops(
+        return MeasOps(
             overlap=overlap_g,
             build_meas_ctx=build_meas_ctx,
             kernels={k_force_bias: force_bias_kernel_g},

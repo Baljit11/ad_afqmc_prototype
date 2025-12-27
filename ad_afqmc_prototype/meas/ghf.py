@@ -6,18 +6,18 @@ from typing import Any
 import jax
 import jax.numpy as jnp
 
-from ..core.ops import k_energy, k_force_bias, meas_ops
-from ..core.system import system
-from ..ham.chol import ham_chol
-from ..ham.hubbard import ham_hubbard
-from ..trial.ghf import ghf_trial, overlap_g, overlap_r, overlap_u
+from ..core.ops import MeasOps, k_energy, k_force_bias
+from ..core.system import System
+from ..ham.chol import HamChol
+from ..ham.hubbard import HamHubbard
+from ..trial.ghf import GhfTrial, overlap_g, overlap_r, overlap_u
 
 # ---------------------
 # chol
 # ---------------------
 
 
-def _green_half_u(wu: jax.Array, wd: jax.Array, trial_data: ghf_trial) -> jax.Array:
+def _green_half_u(wu: jax.Array, wd: jax.Array, trial_data: GhfTrial) -> jax.Array:
     """
     Mixed half Green for unrestricted walker, returned as (nelec_total, 2*norb).
     """
@@ -33,7 +33,7 @@ def _green_half_u(wu: jax.Array, wd: jax.Array, trial_data: ghf_trial) -> jax.Ar
     return gT.T  # (ne,2n)
 
 
-def _green_half_r(w: jax.Array, trial_data: ghf_trial) -> jax.Array:
+def _green_half_r(w: jax.Array, trial_data: GhfTrial) -> jax.Array:
     """
     Mixed half Green for restricted walker, returned as (nelec_total, 2*norb).
     """
@@ -49,7 +49,7 @@ def _green_half_r(w: jax.Array, trial_data: ghf_trial) -> jax.Array:
     return gT.T  # (ne,2n)
 
 
-def _green_half_g(w: jax.Array, trial_data: ghf_trial) -> jax.Array:
+def _green_half_g(w: jax.Array, trial_data: GhfTrial) -> jax.Array:
     """
     Mixed half Green for generalized walker, returned as (nelec_total, 2*norb).
     """
@@ -59,7 +59,7 @@ def _green_half_g(w: jax.Array, trial_data: ghf_trial) -> jax.Array:
 
 
 @dataclass(frozen=True)
-class ghf_chol_meas_ctx:
+class GhfCholMeasCtx:
     """
     Half-rotated intermediates for GHF estimators with cholesky hamiltonian.
 
@@ -73,7 +73,7 @@ class ghf_chol_meas_ctx:
     rot_chol_flat: jax.Array
 
 
-def build_meas_ctx_chol(ham_data: ham_chol, trial_data: ghf_trial) -> ghf_chol_meas_ctx:
+def build_meas_ctx_chol(ham_data: HamChol, trial_data: GhfTrial) -> GhfCholMeasCtx:
     cH = trial_data.mo_coeff.conj().T  # (ne, 2n)
     norb = trial_data.norb
 
@@ -96,19 +96,19 @@ def build_meas_ctx_chol(ham_data: ham_chol, trial_data: ghf_trial) -> ghf_chol_m
         rot_chol = jax.vmap(lambda x: cH @ x, in_axes=0)(ham_data.chol)  # (nchol,ne,ns)
 
     rot_chol_flat = rot_chol.reshape(rot_chol.shape[0], -1)
-    return ghf_chol_meas_ctx(
+    return GhfCholMeasCtx(
         rot_h1=rot_h1, rot_chol=rot_chol, rot_chol_flat=rot_chol_flat
     )
 
 
 def force_bias_kernel_from_green(
-    g_half: jax.Array, meas_ctx: ghf_chol_meas_ctx
+    g_half: jax.Array, meas_ctx: GhfCholMeasCtx
 ) -> jax.Array:
     return jnp.einsum("gij,ij->g", meas_ctx.rot_chol, g_half, optimize="optimal")
 
 
 def energy_kernel_from_green(
-    g_half: jax.Array, ham_data: ham_chol, meas_ctx: ghf_chol_meas_ctx
+    g_half: jax.Array, ham_data: HamChol, meas_ctx: GhfCholMeasCtx
 ) -> jax.Array:
     ene0 = ham_data.h0
     ene1 = jnp.sum(g_half * meas_ctx.rot_h1)
@@ -123,7 +123,7 @@ def energy_kernel_from_green(
 
 
 def force_bias_kernel_r(
-    walker: jax.Array, ham_data: Any, meas_ctx: ghf_chol_meas_ctx, trial_data: ghf_trial
+    walker: jax.Array, ham_data: Any, meas_ctx: GhfCholMeasCtx, trial_data: GhfTrial
 ) -> jax.Array:
     g = _green_half_r(walker, trial_data)
     return force_bias_kernel_from_green(g, meas_ctx)
@@ -132,8 +132,8 @@ def force_bias_kernel_r(
 def force_bias_kernel_u(
     walker: tuple[jax.Array, jax.Array],
     ham_data: Any,
-    meas_ctx: ghf_chol_meas_ctx,
-    trial_data: ghf_trial,
+    meas_ctx: GhfCholMeasCtx,
+    trial_data: GhfTrial,
 ) -> jax.Array:
     wu, wd = walker
     g = _green_half_u(wu, wd, trial_data)
@@ -141,7 +141,7 @@ def force_bias_kernel_u(
 
 
 def force_bias_kernel_g(
-    walker: jax.Array, ham_data: Any, meas_ctx: ghf_chol_meas_ctx, trial_data: ghf_trial
+    walker: jax.Array, ham_data: Any, meas_ctx: GhfCholMeasCtx, trial_data: GhfTrial
 ) -> jax.Array:
     g = _green_half_g(walker, trial_data)
     return force_bias_kernel_from_green(g, meas_ctx)
@@ -149,9 +149,9 @@ def force_bias_kernel_g(
 
 def energy_kernel_r(
     walker: jax.Array,
-    ham_data: ham_chol,
-    meas_ctx: ghf_chol_meas_ctx,
-    trial_data: ghf_trial,
+    ham_data: HamChol,
+    meas_ctx: GhfCholMeasCtx,
+    trial_data: GhfTrial,
 ) -> jax.Array:
     g = _green_half_r(walker, trial_data)
     return energy_kernel_from_green(g, ham_data, meas_ctx)
@@ -159,9 +159,9 @@ def energy_kernel_r(
 
 def energy_kernel_u(
     walker: tuple[jax.Array, jax.Array],
-    ham_data: ham_chol,
-    meas_ctx: ghf_chol_meas_ctx,
-    trial_data: ghf_trial,
+    ham_data: HamChol,
+    meas_ctx: GhfCholMeasCtx,
+    trial_data: GhfTrial,
 ) -> jax.Array:
     wu, wd = walker
     g = _green_half_u(wu, wd, trial_data)
@@ -170,36 +170,36 @@ def energy_kernel_u(
 
 def energy_kernel_g(
     walker: jax.Array,
-    ham_data: ham_chol,
-    meas_ctx: ghf_chol_meas_ctx,
-    trial_data: ghf_trial,
+    ham_data: HamChol,
+    meas_ctx: GhfCholMeasCtx,
+    trial_data: GhfTrial,
 ) -> jax.Array:
     g = _green_half_g(walker, trial_data)
     return energy_kernel_from_green(g, ham_data, meas_ctx)
 
 
-def make_ghf_meas_ops_chol(sys: system) -> meas_ops:
+def make_ghf_meas_ops_chol(sys: System) -> MeasOps:
     """
     GHF measurement ops for Cholesky Hamiltonians
     """
     wk = sys.walker_kind.lower()
 
     if wk == "restricted":
-        return meas_ops(
+        return MeasOps(
             overlap=overlap_r,
             build_meas_ctx=build_meas_ctx_chol,
             kernels={k_force_bias: force_bias_kernel_r, k_energy: energy_kernel_r},
         )
 
     if wk == "unrestricted":
-        return meas_ops(
+        return MeasOps(
             overlap=overlap_u,
             build_meas_ctx=build_meas_ctx_chol,
             kernels={k_force_bias: force_bias_kernel_u, k_energy: energy_kernel_u},
         )
 
     if wk == "generalized":
-        return meas_ops(
+        return MeasOps(
             overlap=overlap_g,
             build_meas_ctx=build_meas_ctx_chol,
             kernels={k_force_bias: force_bias_kernel_g, k_energy: energy_kernel_g},
@@ -214,7 +214,7 @@ def make_ghf_meas_ops_chol(sys: system) -> meas_ops:
 
 
 def _full_green_unrestricted(
-    wu: jax.Array, wd: jax.Array, trial_data: ghf_trial
+    wu: jax.Array, wd: jax.Array, trial_data: GhfTrial
 ) -> jax.Array:
     """
     Full Green's function (2n,2n) for unrestricted walkers.
@@ -237,7 +237,7 @@ def _full_green_unrestricted(
     return g
 
 
-def _full_green_generalized(w: jax.Array, trial_data: ghf_trial) -> jax.Array:
+def _full_green_generalized(w: jax.Array, trial_data: GhfTrial) -> jax.Array:
     c_occ_H = trial_data.mo_coeff.conj().T
     inv = jnp.linalg.inv(c_occ_H @ w)
     g = (w @ inv @ c_occ_H).T
@@ -246,9 +246,9 @@ def _full_green_generalized(w: jax.Array, trial_data: ghf_trial) -> jax.Array:
 
 def energy_kernel_hubbard_u(
     walker: tuple[jax.Array, jax.Array],
-    ham_data: ham_hubbard,
+    ham_data: HamHubbard,
     meas_ctx: Any,
-    trial_data: ghf_trial,
+    trial_data: GhfTrial,
 ) -> jax.Array:
     wu, wd = walker
     g = _full_green_unrestricted(wu, wd, trial_data)
@@ -269,9 +269,9 @@ def energy_kernel_hubbard_u(
 
 def energy_kernel_hubbard_g(
     walker: jax.Array,
-    ham_data: ham_hubbard,
+    ham_data: HamHubbard,
     meas_ctx: Any,
-    trial_data: ghf_trial,
+    trial_data: GhfTrial,
 ) -> jax.Array:
     g = _full_green_generalized(walker, trial_data)
     norb = trial_data.norb
@@ -289,20 +289,20 @@ def energy_kernel_hubbard_g(
     return e1 + e2
 
 
-def make_ghf_meas_ops_hubbard(sys: system) -> meas_ops:
+def make_ghf_meas_ops_hubbard(sys: System) -> MeasOps:
     """
     GHF measurement ops for hubbard hamiltonian
     """
     wk = sys.walker_kind.lower()
 
     if wk == "unrestricted":
-        return meas_ops(
+        return MeasOps(
             overlap=overlap_u,
             kernels={k_energy: energy_kernel_hubbard_u},
         )
 
     if wk == "generalized":
-        return meas_ops(
+        return MeasOps(
             overlap=overlap_g,
             kernels={k_energy: energy_kernel_hubbard_g},
         )

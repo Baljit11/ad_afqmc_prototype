@@ -7,7 +7,7 @@ walker_kind = Literal["restricted", "unrestricted", "generalized"]
 
 
 @dataclass(frozen=True)
-class system:
+class System:
     """
     Static system configuration
       - norb: number of spatial orbitals

@@ -12,29 +12,29 @@ from .typing import ham_data, trial_data
 # trial
 
 
-class overlap_fn(Protocol):
+class OverlapFn(Protocol):
     def __call__(self, walker: Any, trial_data: Any) -> jax.Array: ...
 
 
-class rdm1_fn(Protocol):
+class Rdm1Fn(Protocol):
     def __call__(self, trial_data: Any) -> jax.Array: ...
 
 
-class trial_ops(NamedTuple):
+class TrialOps(NamedTuple):
     """
     Trial operations.
       - overlap: overlap for a single walker
       - get_rdm1: trial rdm1
     """
 
-    overlap: overlap_fn  # (walker, trial_data) -> overlap
-    get_rdm1: rdm1_fn  # (trial_data) -> rdm1
+    overlap: OverlapFn  # (walker, trial_data) -> overlap
+    get_rdm1: Rdm1Fn  # (trial_data) -> rdm1
 
 
 # hamiltonian
 
 
-class ham_ops(NamedTuple):
+class HamOps(NamedTuple):
     """
     Hamiltonian (would probably be helpful when adding different Hamiltonians).
     """
@@ -45,7 +45,7 @@ class ham_ops(NamedTuple):
 # measurements
 
 
-class meas_kernel(Protocol):
+class MeasKernel(Protocol):
     """
     Measurement kernel protocol.
     """
@@ -61,13 +61,13 @@ k_force_bias = "force_bias"
 
 
 @dataclass(frozen=True)
-class meas_ops:
+class MeasOps:
     """
     Measurement ops: trial + ham estimators + optional observables.
     """
 
-    # same as trial_ops.overlap
-    overlap: overlap_fn  # (walker, trial_data) -> overlap
+    # same as TrialOps.overlap
+    overlap: OverlapFn  # (walker, trial_data) -> overlap
 
     # intermediates for measurements
     build_meas_ctx: Callable[[ham_data, trial_data], Any] = (
@@ -75,10 +75,10 @@ class meas_ops:
     )
 
     # algorithm kernels (e.g. "energy", "force_bias")
-    kernels: Mapping[str, meas_kernel] = field(default_factory=dict)
+    kernels: Mapping[str, MeasKernel] = field(default_factory=dict)
 
     # optional observables (e.g. "mixed_rdm1", "nn_corr", ...)
-    observables: Mapping[str, meas_kernel] = field(default_factory=dict)
+    observables: Mapping[str, MeasKernel] = field(default_factory=dict)
 
     def has_kernel(self, name: str) -> bool:
         return name in self.kernels
@@ -86,7 +86,7 @@ class meas_ops:
     def has_observable(self, name: str) -> bool:
         return name in self.observables
 
-    def require_kernel(self, name: str) -> meas_kernel:
+    def require_kernel(self, name: str) -> MeasKernel:
         try:
             return self.kernels[name]
         except KeyError as e:
@@ -95,7 +95,7 @@ class meas_ops:
                 f"missing required kernel '{name}'. available: [{avail}]"
             ) from e
 
-    def require_observable(self, name: str) -> meas_kernel:
+    def require_observable(self, name: str) -> MeasKernel:
         try:
             return self.observables[name]
         except KeyError as e:
