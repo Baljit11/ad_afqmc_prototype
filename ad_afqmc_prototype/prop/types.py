@@ -64,6 +64,7 @@ class InitPropState(Protocol):
         params: QmcParams,
         initial_walkers: Any | None = None,
         initial_e_estimate: jax.Array | None = None,
+        rdm1: jax.Array | None = None,
     ) -> PropState: ...
 
 

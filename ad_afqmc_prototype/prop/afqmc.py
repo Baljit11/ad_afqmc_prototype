@@ -24,6 +24,7 @@ def init_prop_state(
     params: QmcParams,
     initial_walkers: Any | None = None,
     initial_e_estimate: jax.Array | None = None,
+    rdm1: jax.Array | None = None,
 ) -> PropState:
     """
     Initialize AFQMC propagation state.
@@ -34,9 +35,9 @@ def init_prop_state(
     weights = jnp.ones((n_walkers,))
 
     if initial_walkers is None:
-        initial_walkers = init_walkers(
-            sys=sys, rdm1=trial_ops.get_rdm1(trial_data), n_walkers=n_walkers
-        )
+        if rdm1 is None:
+            rdm1 = trial_ops.get_rdm1(trial_data)
+        initial_walkers = init_walkers(sys=sys, rdm1=rdm1, n_walkers=n_walkers)
 
     overlaps = wk.vmap_chunked(
         meas_ops.overlap, n_chunks=params.n_chunks, in_axes=(0, None)
