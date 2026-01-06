@@ -210,7 +210,9 @@ def _apply_trotter_g_from_restricted(
     return _apply_one_body_half_generalized_from_restricted(w2, prop_ctx, norb=norb)
 
 
-def make_trotter_ops(ham_data: HamChol, walker_kind: str) -> TrotterOps:
+def make_trotter_ops(
+    ham_data: HamChol, walker_kind: str, mixed_precision: bool = False
+) -> TrotterOps:
     walker_kind = walker_kind.lower()
     nf = int(ham_data.chol.shape[0])
 
@@ -220,8 +222,19 @@ def make_trotter_ops(ham_data: HamChol, walker_kind: str) -> TrotterOps:
     n = int(ham_data.chol.shape[1])
     chol_flat = ham_data.chol.reshape(nf, -1)
 
+    if mixed_precision:
+        vhs_real_dtype = jnp.float32
+        vhs_complex_dtype = jnp.complex64
+    else:
+        vhs_real_dtype = jnp.float64
+        vhs_complex_dtype = jnp.complex128
+
     def make_vhs(field: jax.Array, *, chol_flat=chol_flat, n=n) -> jax.Array:
-        return _make_vhs_split_flat(chol_flat=chol_flat, x=field, n=n)
+        return _make_vhs_split_flat(
+            chol_flat=chol_flat.astype(vhs_real_dtype),
+            x=field.astype(vhs_complex_dtype),
+            n=n,
+        )
 
     if ham_data.basis == "generalized" and walker_kind != "generalized":
         raise ValueError(

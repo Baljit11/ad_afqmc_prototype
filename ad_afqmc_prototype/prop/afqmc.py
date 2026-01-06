@@ -140,8 +140,12 @@ def afqmc_step(
     )
 
 
-def make_prop_ops(ham_data: HamChol, walker_kind: str) -> PropOps:
-    trotter_ops = make_trotter_ops(ham_data, walker_kind)
+def make_prop_ops(
+    ham_data: HamChol, walker_kind: str, mixed_precision=False
+) -> PropOps:
+    trotter_ops = make_trotter_ops(
+        ham_data, walker_kind, mixed_precision=mixed_precision
+    )
 
     def step(
         state: PropState,
