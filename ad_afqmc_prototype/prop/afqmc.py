@@ -172,7 +172,12 @@ def make_prop_ops(
     def build_prop_ctx(
         ham_data: Any, rdm1: jax.Array, params: QmcParams
     ) -> CholAfqmcCtx:
-        return _build_prop_ctx(ham_data, rdm1, params.dt)
+        return _build_prop_ctx(
+            ham_data,
+            rdm1,
+            params.dt,
+            chol_flat_precision=jnp.float32 if mixed_precision else jnp.float64,
+        )
 
     return PropOps(
         init_prop_state=init_prop_state, build_prop_ctx=build_prop_ctx, step=step

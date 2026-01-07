@@ -21,6 +21,8 @@ class CholAfqmcCtx:
     exp_h1_half: jax.Array  # (n,n) or (ns,ns)
     mf_shifts: jax.Array  # (n_fields,)
     h0_prop: jax.Array  # scalar
+    chol_flat: jax.Array  # (n_fields, n*n)
+    norb: int
 
     def tree_flatten(self):
         return (
@@ -29,17 +31,21 @@ class CholAfqmcCtx:
             self.exp_h1_half,
             self.mf_shifts,
             self.h0_prop,
-        ), None
+            self.chol_flat,
+        ), (self.norb,)
 
     @classmethod
     def tree_unflatten(cls, aux, children):
-        dt, sqrt_dt, exp_h1_half, mf_shifts, h0_prop = children
+        dt, sqrt_dt, exp_h1_half, mf_shifts, h0_prop, chol_flat = children
+        (norb,) = aux
         return cls(
             dt=dt,
             sqrt_dt=sqrt_dt,
             exp_h1_half=exp_h1_half,
             mf_shifts=mf_shifts,
             h0_prop=h0_prop,
+            chol_flat=chol_flat,
+            norb=norb,
         )
 
 
@@ -74,7 +80,12 @@ def _make_vhs_split_flat(*, chol_flat: jax.Array, x: jax.Array, n: int) -> jax.A
     return lax.complex(v_re, v_im).reshape(n, n)
 
 
-def _build_prop_ctx(ham_data: HamChol, rdm1: jax.Array, dt: float) -> CholAfqmcCtx:
+def _build_prop_ctx(
+    ham_data: HamChol,
+    rdm1: jax.Array,
+    dt: float,
+    chol_flat_precision: jnp.dtype = jnp.float64,
+) -> CholAfqmcCtx:
     dt_a = jnp.array(dt)
     sqrt_dt = jnp.sqrt(dt_a)
 
@@ -92,12 +103,18 @@ def _build_prop_ctx(ham_data: HamChol, rdm1: jax.Array, dt: float) -> CholAfqmcC
         h1_eff = h1_eff - v0m - v1m
 
     exp_h1_half = _build_exp_h1_half_from_h1(h1_eff, dt_a)
+    chol_flat = ham_data.chol.reshape(ham_data.chol.shape[0], -1).astype(
+        chol_flat_precision
+    )
+    norb = ham_data.chol.shape[1]
     return CholAfqmcCtx(
         dt=dt_a,
         sqrt_dt=sqrt_dt,
         exp_h1_half=exp_h1_half,
         mf_shifts=mf,
         h0_prop=h0_prop,
+        chol_flat=chol_flat,
+        norb=norb,
     )
 
 
@@ -128,9 +145,9 @@ def _apply_two_body_array(
     prop_ctx: CholAfqmcCtx,
     n_terms: int,
     *,
-    make_vhs: Callable[[jax.Array], jax.Array],
+    make_vhs: Callable[[jax.Array, CholAfqmcCtx], jax.Array],
 ) -> jax.Array:
-    vhs = make_vhs(field).astype(w.dtype)
+    vhs = make_vhs(field, prop_ctx).astype(w.dtype)
     a = (1.0j * prop_ctx.sqrt_dt).astype(w.dtype)
     return taylor_expm_action(a, vhs, w, n_terms)
 
@@ -141,10 +158,10 @@ def _apply_two_body_unrestricted(
     prop_ctx: CholAfqmcCtx,
     n_terms: int,
     *,
-    make_vhs: Callable[[jax.Array], jax.Array],
+    make_vhs: Callable[[jax.Array, CholAfqmcCtx], jax.Array],
 ) -> Tuple[jax.Array, jax.Array]:
     wu, wd = w_ud
-    vhs = make_vhs(field).astype(wu.dtype)
+    vhs = make_vhs(field, prop_ctx).astype(wu.dtype)
     a = (1.0j * prop_ctx.sqrt_dt).astype(wu.dtype)
     return (
         taylor_expm_action(a, vhs, wu, n_terms),
@@ -158,10 +175,10 @@ def _apply_two_body_generalized_from_restricted(
     prop_ctx: CholAfqmcCtx,
     n_terms: int,
     *,
-    make_vhs: Callable[[jax.Array], jax.Array],
+    make_vhs: Callable[[jax.Array, CholAfqmcCtx], jax.Array],
     norb: int,
 ) -> jax.Array:
-    vhs = make_vhs(field).astype(w.dtype)
+    vhs = make_vhs(field, prop_ctx).astype(w.dtype)
     a = (1.0j * prop_ctx.sqrt_dt).astype(w.dtype)
     top = taylor_expm_action(a, vhs, w[:norb, :], n_terms)
     bot = taylor_expm_action(a, vhs, w[norb:, :], n_terms)
@@ -174,7 +191,7 @@ def _apply_trotter_r(
     prop_ctx: CholAfqmcCtx,
     n_terms: int,
     *,
-    make_vhs: Callable[[jax.Array], jax.Array],
+    make_vhs: Callable[[jax.Array, CholAfqmcCtx], jax.Array],
 ) -> jax.Array:
     w1 = _apply_one_body_half_array(w, prop_ctx)
     w2 = _apply_two_body_array(w1, field, prop_ctx, n_terms, make_vhs=make_vhs)
@@ -187,7 +204,7 @@ def _apply_trotter_u(
     prop_ctx: CholAfqmcCtx,
     n_terms: int,
     *,
-    make_vhs: Callable[[jax.Array], jax.Array],
+    make_vhs: Callable[[jax.Array, CholAfqmcCtx], jax.Array],
 ) -> Tuple[jax.Array, jax.Array]:
     w1 = _apply_one_body_half_unrestricted(w_ud, prop_ctx)
     w2 = _apply_two_body_unrestricted(w1, field, prop_ctx, n_terms, make_vhs=make_vhs)
@@ -200,7 +217,7 @@ def _apply_trotter_g_from_restricted(
     prop_ctx: CholAfqmcCtx,
     n_terms: int,
     *,
-    make_vhs: Callable[[jax.Array], jax.Array],
+    make_vhs: Callable[[jax.Array, CholAfqmcCtx], jax.Array],
     norb: int,
 ) -> jax.Array:
     w1 = _apply_one_body_half_generalized_from_restricted(w, prop_ctx, norb=norb)
@@ -229,11 +246,11 @@ def make_trotter_ops(
         vhs_real_dtype = jnp.float64
         vhs_complex_dtype = jnp.complex128
 
-    def make_vhs(field: jax.Array, *, chol_flat=chol_flat, n=n) -> jax.Array:
+    def make_vhs(field: jax.Array, ctx: CholAfqmcCtx) -> jax.Array:
         return _make_vhs_split_flat(
-            chol_flat=chol_flat.astype(vhs_real_dtype),
+            chol_flat=ctx.chol_flat,
             x=field.astype(vhs_complex_dtype),
-            n=n,
+            n=ctx.norb,
         )
 
     if ham_data.basis == "generalized" and walker_kind != "generalized":
