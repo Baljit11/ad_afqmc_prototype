@@ -148,7 +148,7 @@ def run_qmc_energy(
         f"{int(state.node_encounters):10d}  "
         f"{0.0:8.1f}"
     )
-    chunk = print_every
+    chunk = print_every if print_every > 0 else 1
     for start in range(0, params.n_eql_blocks, chunk):
         n = min(chunk, params.n_eql_blocks - start)
         state, e_chunk, w_chunk = run_blocks(
@@ -187,7 +187,7 @@ def run_qmc_energy(
             f"{'W':>12s}    {'nodes':>10s}  {'dt[s/bl]':>10s}  {'t[s]':>7s}"
         )
 
-    chunk = print_every
+    chunk = print_every if print_every > 0 else 1
     for start in range(0, params.n_blocks, chunk):
         n = min(chunk, params.n_blocks - start)
         state, e_chunk, w_chunk = run_blocks(
