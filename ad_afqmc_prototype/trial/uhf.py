@@ -52,10 +52,16 @@ def get_rdm1(trial_data: UhfTrial) -> jax.Array:
     return jnp.stack([dm_a, dm_b], axis=0)  # (2, norb, norb)
 
 
+def overlap_r(walker: jax.Array, trial_data: UhfTrial) -> jax.Array:
+    w = walker
+    cu = trial_data.mo_coeff_a.conj().T @ w  # (nocc[0], nocc[0])
+    cd = trial_data.mo_coeff_b.conj().T @ w  # (nocc[1], nocc[1])
+    return _det(cu) * _det(cd)
+
 def overlap_u(walker: tuple[jax.Array, jax.Array], trial_data: UhfTrial) -> jax.Array:
     wu, wd = walker
-    cu = trial_data.mo_coeff_a.conj().T @ wu  # (nocc_a, nocc_a)
-    cd = trial_data.mo_coeff_b.conj().T @ wd  # (nocc_b, nocc_b)
+    cu = trial_data.mo_coeff_a.conj().T @ wu  # (nocc[0], nocc[0])
+    cd = trial_data.mo_coeff_b.conj().T @ wd  # (nocc[1], nocc[1])
     return _det(cu) * _det(cd)
 
 
@@ -63,9 +69,9 @@ def overlap_g(walker: jax.Array, trial_data: UhfTrial) -> jax.Array:
     norb = trial_data.norb
     caH = trial_data.mo_coeff_a.conj().T  # (nocc[0], norb)
     cbH = trial_data.mo_coeff_b.conj().T  # (nocc[1], norb)
-    top = caH @ walker[:norb, :]  # (nocc, 2*nocc)
-    bot = cbH @ walker[norb:, :]  # (nocc, 2*nocc)
-    m = jnp.vstack([top, bot])  # (2*nocc, 2*nocc)
+    top = caH @ walker[:norb, :]  # (nocc[0], sum(nocc))
+    bot = cbH @ walker[norb:, :]  # (nocc[1], sum(nocc))
+    m = jnp.vstack([top, bot])  # (sum(nocc), sum(nocc))
     return _det(m)
 
 
@@ -73,7 +79,7 @@ def make_uhf_trial_ops(sys: System) -> TrialOps:
     wk = sys.walker_kind.lower()
 
     if wk == "restricted":
-        raise ValueError(f"Cannot use {sys.walker_kind} walker with UHF.")
+        return TrialOps(overlap=overlap_r, get_rdm1=get_rdm1)
 
     if wk == "unrestricted":
         return TrialOps(overlap=overlap_u, get_rdm1=get_rdm1)

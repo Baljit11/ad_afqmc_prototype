@@ -10,7 +10,7 @@ from jax import tree_util
 from ..core.ops import MeasOps, k_energy, k_force_bias
 from ..core.system import System
 from ..ham.chol import HamChol
-from ..trial.uhf import UhfTrial, overlap_u, overlap_g
+from ..trial.uhf import UhfTrial, overlap_r, overlap_u, overlap_g
 
 
 def _half_green_from_overlap_matrix(w: jax.Array, ovlp_mat: jax.Array) -> jax.Array:
@@ -18,6 +18,26 @@ def _half_green_from_overlap_matrix(w: jax.Array, ovlp_mat: jax.Array) -> jax.Ar
     green_half = (w @ inv(ovlp_mat)).T
     """
     return jnp.linalg.solve(ovlp_mat.T, w.T)
+
+def force_bias_kernel_r(
+    walker: jax.Array,
+    ham_data: Any,
+    meas_ctx: UhfMeasCtx,
+    trial_data: UhfTrial,
+) -> jax.Array: 
+    w = walker
+    mu = trial_data.mo_coeff_a.conj().T @ w
+    md = trial_data.mo_coeff_b.conj().T @ w
+    gu = _half_green_from_overlap_matrix(w, mu)  # (nocc[0], norb)
+    gd = _half_green_from_overlap_matrix(w, md)  # (nocc[1], norb)
+    
+    fb_u = jnp.einsum(
+        "gij,ij->g", meas_ctx.rot_chol_a, gu, optimize="optimal"
+    )
+    fb_d = jnp.einsum(
+        "gij,ij->g", meas_ctx.rot_chol_b, gd, optimize="optimal"
+    )
+    return fb_u + fb_d
 
 def force_bias_kernel_u(
     walker: tuple[jax.Array, jax.Array],
@@ -38,6 +58,42 @@ def force_bias_kernel_u(
         "gij,ij->g", meas_ctx.rot_chol_b, gd, optimize="optimal"
     )
     return fb_u + fb_d
+
+def energy_kernel_r(
+    walker: jax.Array,
+    ham_data: HamChol,
+    meas_ctx: UhfMeasCtx,
+    trial_data: UhfTrial,
+) -> jax.Array:
+    w = walker
+    mu = trial_data.mo_coeff_a.conj().T @ w
+    md = trial_data.mo_coeff_b.conj().T @ w
+    gu = _half_green_from_overlap_matrix(w, mu)
+    gd = _half_green_from_overlap_matrix(w, md)
+
+    e0 = ham_data.h0
+    e1 = jnp.sum(
+        gu * meas_ctx.rot_h1_a
+    ) + jnp.sum(
+        gd * meas_ctx.rot_h1_b
+    )
+
+    f_up = jnp.einsum("gij,jk->gik", meas_ctx.rot_chol_a, gu.T, optimize="optimal")
+    f_dn = jnp.einsum("gij,jk->gik", meas_ctx.rot_chol_b, gd.T, optimize="optimal")
+    c_up = jax.vmap(jnp.trace)(f_up)
+    c_dn = jax.vmap(jnp.trace)(f_dn)
+    exc_up = jnp.sum(jax.vmap(lambda x: x * x.T)(f_up))
+    exc_dn = jnp.sum(jax.vmap(lambda x: x * x.T)(f_dn))
+
+    e2 = (
+        jnp.sum(c_up * c_up)
+        + jnp.sum(c_dn * c_dn)
+        + 2.0 * jnp.sum(c_up * c_dn)
+        - exc_up
+        - exc_dn
+    ) / 2.0
+
+    return e0 + e1 + e2
 
 def energy_kernel_u(
     walker: tuple[jax.Array, jax.Array],
@@ -177,7 +233,11 @@ def build_meas_ctx(ham_data: HamChol, trial_data: UhfTrial) -> UhfMeasCtx:
 def make_uhf_meas_ops(sys: System) -> MeasOps:
     wk = sys.walker_kind.lower()
     if wk == "restricted":
-        raise ValueError(f"Cannot use {sys.walker_kind} walker with UHF.")
+        return MeasOps(
+            overlap=overlap_r,
+            build_meas_ctx=build_meas_ctx,
+            kernels={k_force_bias: force_bias_kernel_r, k_energy: energy_kernel_r},
+        )
 
     if wk == "unrestricted":
         return MeasOps(

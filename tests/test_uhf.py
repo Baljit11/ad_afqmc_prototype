@@ -23,6 +23,7 @@ def _make_uhf_trial(key, norb, nup, ndn, dtype=jnp.complex128) -> UhfTrial:
 @pytest.mark.parametrize(
     "walker_kind,norb,nup,ndn,n_chol",
     [
+        ("restricted", 6, 2, 2, 8),
         ("unrestricted", 6, 2, 1, 8),
     ],
 )
@@ -67,6 +68,7 @@ def test_auto_force_bias_matches_manual_uhf(walker_kind, norb, nup, ndn, n_chol)
 @pytest.mark.parametrize(
     "walker_kind,norb,nup,ndn,n_chol",
     [
+        ("restricted", 6, 2, 2, 8),
         ("unrestricted", 6, 2, 1, 8),
         ("generalized", 6, 2, 1, 8),
     ],
