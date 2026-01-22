@@ -192,6 +192,5 @@ def make_uhf_meas_ops(sys: System) -> MeasOps:
             build_meas_ctx=build_meas_ctx,
             kernels={k_energy: energy_kernel_g},
         )
-        #raise NotImplementedError
 
     raise ValueError(f"unknown walker_kind: {sys.walker_kind}")
