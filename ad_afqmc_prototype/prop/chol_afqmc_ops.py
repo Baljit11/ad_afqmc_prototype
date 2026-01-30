@@ -25,8 +25,6 @@ class CholAfqmcCtx:
     h0_prop: jax.Array  # scalar
     chol_flat: jax.Array  # (n_fields, n*n)
     norb: int
-    mf_fp_shift: Optional[jax.Array] = None
-    h0_prop_fp: Optional[jax.Array] = None
 
     def tree_flatten(self):
         return (
@@ -36,15 +34,13 @@ class CholAfqmcCtx:
             self.mf_shifts,
             self.h0_prop,
             self.chol_flat,
-        ), (self.norb,self.mf_fp_shift,self.h0_prop_fp)
+        ), (self.norb,)
 
     @classmethod
     def tree_unflatten(cls, aux, children):
         dt, sqrt_dt, exp_h1_half, mf_shifts, h0_prop, chol_flat = children
-        (norb,) = aux[0]
-        mf_fp_shift = aux[1] if len(aux) > 1 else None
-        h0_prop_fp = aux[2] if len(aux) > 2 else None
-
+        (norb,) = aux
+        
         return cls(
             dt=dt,
             sqrt_dt=sqrt_dt,
@@ -53,8 +49,6 @@ class CholAfqmcCtx:
             h0_prop=h0_prop,
             chol_flat=chol_flat,
             norb=norb,
-            mf_fp_shift=mf_fp_shift,
-            h0_prop_fp=h0_prop_fp,
         )
 
 
@@ -124,47 +118,6 @@ def _build_prop_ctx(
         h0_prop=h0_prop,
         chol_flat=chol_flat,
         norb=norb,
-    )
-
-def _build_prop_ctx_fp(ham_data: HamChol,
-    sys: System,                    
-    rdm1: jax.Array,
-    dt: float,
-    ene0: jnp.dtype = jnp.float64,
-    chol_flat_precision: jnp.dtype = jnp.float64,   
-) -> CholAfqmcCtx:
-    dt_a = jnp.array(dt)
-    sqrt_dt = jnp.sqrt(dt_a)
-
-    mf = _mf_shifts(ham_data, rdm1)
-    mf_fp = mf * 0.5 / sys.nelec[0]
-    h0_prop = -ham_data.h0 - 0.5 * jnp.sum(mf**2)
-    h0_prop_fp = 0.5*(h0_prop + ene0)/sys.nelec[0]
-    h1_eff = ham_data.h1
-
-    if ham_data.basis == "restricted":
-        v0m = 0.5 * jnp.einsum(
-            "gik,gkj->ij", ham_data.chol, ham_data.chol, optimize="optimal"
-        )
-        mf_r = (1.0j * mf).real
-        v1m = jnp.einsum("g,gik->ik", mf_r, ham_data.chol, optimize="optimal")
-        h1_eff = h1_eff - v0m - v1m
-
-    exp_h1_half = _build_exp_h1_half_from_h1(h1_eff, dt_a)
-    chol_flat = ham_data.chol.reshape(ham_data.chol.shape[0], -1).astype(
-        chol_flat_precision
-    )
-    norb = ham_data.chol.shape[1]
-    return CholAfqmcCtx(
-        dt=dt_a,
-        sqrt_dt=sqrt_dt,
-        exp_h1_half=exp_h1_half,
-        mf_shifts=mf,
-        h0_prop=h0_prop,
-        chol_flat=chol_flat,
-        norb=norb,
-        mf_fp_shift = mf_fp,
-        h0_prop_fp = h0_prop_fp, 
     )
 
 def _apply_one_body_half_array(w: jax.Array, prop_ctx: CholAfqmcCtx) -> jax.Array:

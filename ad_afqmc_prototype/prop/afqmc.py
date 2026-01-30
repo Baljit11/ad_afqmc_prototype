@@ -12,7 +12,7 @@ from ..core.system import System
 from ..ham.chol import HamChol
 from ..sharding import shard_prop_state
 from ..walkers import init_walkers
-from .chol_afqmc_ops import CholAfqmcCtx, TrotterOps, _build_prop_ctx, make_trotter_ops, _build_prop_ctx_fp
+from .chol_afqmc_ops import CholAfqmcCtx, TrotterOps, _build_prop_ctx, make_trotter_ops
 from .types import PropOps, PropState, QmcParams
 
 
@@ -144,66 +144,7 @@ def afqmc_step(
         node_encounters=node_encounters_new,
     )
 
-def afqmc_step_fp(
-    state: PropState,
-    sys: System,
-    *,
-    params: QmcParams,
-    ham_data: HamChol,
-    trial_data: Any,
-    meas_ops: MeasOps,
-    trotter_ops: TrotterOps,
-    prop_ctx: CholAfqmcCtx,
-    meas_ctx: Any,
-) -> PropState:
-    key, subkey = jax.random.split(state.rng_key)
-    nw = wk.n_walkers(state.walkers)
-    fields = jax.random.normal(subkey, (nw, ham_data.chol.shape[0]))
-    wk_kind = sys.walker_kind.lower()
-    assert wk_kind in [
-            "restricted",
-            "unrestricted",
-        ], "Free propagation is only implemented for restricted and unrestricted walkers."
-    if wk_kind == "unrestricted":
-        shift_term = jnp.einsum("wg,sg->sw", fields, prop_ctx.mf_fp_shift)
-        constants = jnp.einsum(
-                "sw,s->sw",
-                jnp.exp(-jnp.sqrt(prop_ctx.dt) * shift_term),
-                jnp.exp(prop_ctx.dt * prop_ctx.h0_prop_fp),
-            )
-    else:
-        shift_term = jnp.einsum("wg,g->w", fields, prop_ctx.mf_fp_shift)
-        constants = jnp.exp(-jnp.sqrt(prop_ctx.dt) * shift_term) * jnp.exp(
-                prop_ctx.dt * prop_ctx.h0_prop_fp
-            )
 
-    walkers_new = wk.vmap_chunked(
-        trotter_ops.apply_trotter, n_chunks=params.n_chunks, in_axes=(0, 0, None, None)
-    )(state.walkers, fields, prop_ctx, 10)
-        
-    walkers_new = wk.multiply_constants(walkers_new,constants)
-    norms = walkers_new.qr_norm()
-    weights_new = state.weights*norms.real
-    zeta = jax.random.uniform(subkey)
-
-        # Since we compute only R in the QR we need to divide
-        # by norms.real after the SR, requiering to keep track
-        # of the indices
-    indices = wk._sr_indices(state.weights, zeta, nw)
-    norms = norms[indices]
-
-    walker_sr, weight_sr = wk.stochastic_reconfiguration(state.walkers,weights_new,zeta,wk_kind)
-        
-    walker_sr /= norms.real
-
-    return PropState(walkers=walker_sr,
-        weights=weight_sr,
-        overlaps=state.overlaps,
-        rng_key=key,
-        pop_control_ene_shift=state.pop_control_ene_shift,
-        e_estimate=state.e_estimate,
-        node_encounters=state.node_encounters,
-        )
 
 def make_prop_ops(ham_basis: str, walker_kind: str, mixed_precision=False) -> PropOps:
     trotter_ops = make_trotter_ops(
@@ -244,53 +185,4 @@ def make_prop_ops(ham_basis: str, walker_kind: str, mixed_precision=False) -> Pr
 
     return PropOps(
             init_prop_state=init_prop_state, build_prop_ctx=build_prop_ctx, step=step
-    )
-
-
-def make_prop_ops_fp(ham_basis: str, walker_kind: str, sys:System, mixed_precision=False) -> PropOps:
-    trotter_ops = make_trotter_ops(
-        ham_basis, walker_kind, mixed_precision=mixed_precision
-    )
-        
-    def step_fp(
-        state: PropState,
-        *,
-        params: QmcParams,
-        ham_data: Any,
-        trial_data: Any,
-        trial_ops: TrialOps,
-        meas_ops: MeasOps,
-        meas_ctx: Any,
-        prop_ctx: Any,
-    ) -> PropState:
-        return afqmc_step_fp(
-            state,
-            sys,
-            params=params,
-            ham_data=ham_data,
-            trial_data=trial_data,
-            meas_ops=meas_ops,
-            meas_ctx=meas_ctx,
-            prop_ctx=prop_ctx,
-            trotter_ops=trotter_ops,
-        )
-    
-    def make_build_prop_ctx(sys):
-        def build_prop_ctx_fp_i(
-        ham_data: Any, rdm1: jax.Array, params: QmcParams
-    ) -> CholAfqmcCtx:
-            return _build_prop_ctx_fp(
-            ham_data,
-            sys,
-            rdm1,
-            params.dt,
-            params.ene0,
-            chol_flat_precision=jnp.float32 if mixed_precision else jnp.float64,
-        )
-        return build_prop_ctx_fp_i
-
-    build_prop_ctx_fp = make_build_prop_ctx(sys)
-
-    return PropOps(
-            init_prop_state=init_prop_state, build_prop_ctx=build_prop_ctx_fp, step=step_fp
     )

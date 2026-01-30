@@ -78,3 +78,12 @@ class PropOps:
         [Any, jax.Array, QmcParams], Any
     ]  # (ham_data, rdm1, params) -> prop_ctx
     step: StepKernel
+
+
+@dataclass(frozen=True)
+class PropOps_fp:
+    init_prop_state: InitPropState
+    build_prop_ctx: Callable[
+        [Any, System, jax.Array, QmcParams], Any
+    ]  # (ham_data, rdm1, params) -> prop_ctx
+    step: StepKernel
