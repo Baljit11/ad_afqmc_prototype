@@ -34,6 +34,7 @@ class QmcParams:
     n_blocks: int = 500
     n_walkers: int = 200
     seed: int = 42
+    ene0: float = 0
 
 
 class StepKernel(Protocol):

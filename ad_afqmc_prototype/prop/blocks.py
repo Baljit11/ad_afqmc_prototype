@@ -64,6 +64,8 @@ def block(
         meas_ctx=meas_ctx,
     )
 
+    #print(type(prop_ctx))
+    #print(sys.nelec[0])
     def _scan_step(carry: PropState, _x: Any):
         carry = step(carry)
         return carry, None

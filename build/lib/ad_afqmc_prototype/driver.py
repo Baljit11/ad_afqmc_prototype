@@ -106,8 +106,7 @@ def run_qmc_energy(
             params=params,
             mesh=mesh,
         )
-    
-    
+
     if mesh is None or mesh.size == 1:
         block_fn_sr = block_fn
     else:
