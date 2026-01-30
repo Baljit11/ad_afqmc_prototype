@@ -80,7 +80,7 @@ class UcisdMeasCtx:
     cfg: UcisdMeasCfg
 
     def tree_flatten(self):
-        return (
+        children = (
             self.h1_b,
             self.chol_b,
             self.rot_h1_a,
@@ -91,11 +91,13 @@ class UcisdMeasCtx:
             self.rot_chol_flat_b,
             self.lci1_a,
             self.lci1_b,
-            self.cfg,
-        ), None
+        )
+        aux = (self.cfg,)
+        return children, aux
 
     @classmethod
     def tree_unflatten(cls, aux, children):
+        (cfg,) = aux
         (
             h1_b,
             chol_b,
@@ -107,7 +109,6 @@ class UcisdMeasCtx:
             rot_chol_flat_b,
             lci1_a,
             lci1_b,
-            cfg,
         ) = children
         return cls(
             h1_b=h1_b,

@@ -10,7 +10,7 @@ from ..prop.afqmc import make_prop_ops
 from ..prop.blocks import block
 from ..prop.types import QmcParams
 from ..trial.rhf import RhfTrial, make_rhf_trial_ops
-from ..prep.pyscf_interface import get_integrals
+from ..prep.pyscf_interface import get_integrals, get_trial_coeff
 
 class Rhf:
     def __init__(self, mf):
@@ -21,10 +21,13 @@ class Rhf:
 
         sys = System(norb=mol.nao, nelec=mol.nelec, walker_kind="restricted")
         ham_data = HamChol(h0, h1, chol)
-        self.trial_data = RhfTrial(jnp.eye(mol.nao, mol.nelectron // 2))
+
+        mo = get_trial_coeff(mf)
+        mo = mo[:,:sys.nup]
+        self.trial_data = RhfTrial(mo)
         self.trial_ops = make_rhf_trial_ops(sys=sys)
         self.meas_ops = make_rhf_meas_ops(sys=sys)
-        self.prop_ops = make_prop_ops(ham_data, sys.walker_kind)
+        self.prop_ops = make_prop_ops(ham_data.basis, sys.walker_kind)
         self.params = QmcParams(
             n_eql_blocks=20, n_blocks=200, seed=np.random.randint(0, int(1e6))
         )

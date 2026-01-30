@@ -24,7 +24,7 @@ class Cisd:
         self.trial_data = CisdTrial(ci1, ci2)
         self.trial_ops = make_cisd_trial_ops(sys=sys)
         self.meas_ops = make_cisd_meas_ops(sys=sys)
-        self.prop_ops = make_prop_ops(ham_data, sys.walker_kind)
+        self.prop_ops = make_prop_ops(ham_data.basis, sys.walker_kind)
         self.params = QmcParams(
             n_eql_blocks=20, n_blocks=200, seed=np.random.randint(0, int(1e6))
         )

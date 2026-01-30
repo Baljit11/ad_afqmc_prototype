@@ -229,6 +229,10 @@ def _apply_trotter_g_from_restricted(
 def make_trotter_ops(
     ham_basis: str, walker_kind: str, mixed_precision: bool = False
 ) -> TrotterOps:
+    assert type(ham_basis) == str
+    assert type(walker_kind) == str
+    assert type(mixed_precision) == bool
+
     walker_kind = walker_kind.lower()
 
     if mixed_precision:
@@ -267,7 +271,7 @@ def make_trotter_ops(
         raise ValueError(f"unknown walker_kind: {walker_kind}")
 
     # ham_data.basis == "generalized" (so walker_kind must be generalized):
-    apply_trotter = lambda w, f, ctx, n_terms, mv=make_vhs: _apply_trotter_r(
-        w, f, ctx, n_terms, make_vhs=mv
-    )
+    #apply_trotter = lambda w, f, ctx, n_terms, mv=make_vhs: _apply_trotter_r(
+    #    w, f, ctx, n_terms, make_vhs=mv
+    #)
     return TrotterOps(apply_trotter)
