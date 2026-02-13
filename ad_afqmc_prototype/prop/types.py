@@ -35,6 +35,8 @@ class QmcParams:
     n_walkers: int = 200
     seed: int = 42
     ene0: float = 0
+    n_ene_blocks: int = 3
+    
 
 
 class StepKernel(Protocol):
@@ -83,6 +85,7 @@ class PropOps:
 @dataclass(frozen=True)
 class PropOps_fp:
     init_prop_state: InitPropState
+    fp_init_prop_state: InitPropState
     build_prop_ctx: Callable[
         [Any, System, jax.Array, QmcParams], Any
     ]  # (ham_data, rdm1, params) -> prop_ctx

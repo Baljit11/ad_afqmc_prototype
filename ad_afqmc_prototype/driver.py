@@ -4,8 +4,10 @@ import time
 from functools import partial
 from pprint import pprint
 from typing import Any, Callable
+from dataclasses import dataclass, replace
 
 import jax
+import numpy as np
 import jax.numpy as jnp
 from jax import lax
 from jax.sharding import Mesh, NamedSharding
@@ -81,7 +83,7 @@ def make_run_blocks_fp(
     improve compilation, as these objects can be large.
     """
 
-    @partial(jax.jit, static_argnames=("n_blocks",))
+    @partial(jax.jit, static_argnames=("n_blocks","n_ene_blocks"))
     def run_blocks(
         state0,
         *,
@@ -90,24 +92,24 @@ def make_run_blocks_fp(
         meas_ctx,
         prop_ctx,
         n_blocks: int,
+        n_ene_blocks: int,
     ):
-        def one_block(state, _):
+        def one_block(state, n):
             state, obs = block_fn(
-                state,
-                sys=sys,
-                params=params,
-                ham_data=ham_data,
-                trial_data=trial_data,
-                trial_ops=trial_ops,
-                meas_ops=meas_ops,
-                meas_ctx=meas_ctx,
-                prop_ops=prop_ops,
-                prop_ctx=prop_ctx,
-            )
+                    state,
+                    sys=sys,
+                    params=params,
+                    ham_data=ham_data,
+                    trial_data=trial_data,
+                    trial_ops=trial_ops,
+                    meas_ops=meas_ops,
+                    meas_ctx=meas_ctx,
+                    prop_ops=prop_ops,
+                    prop_ctx=prop_ctx,
+                )
             return state, (obs.scalars["energy"], obs.scalars["weight"], obs.scalars["overlap"], obs.scalars["abs_overlap"])
-
         stateN, (e, w, ov, abs_ov) = lax.scan(one_block, state0, xs=None, length=n_blocks)
-        return stateN, e, w, ov, abs_ov 
+        return stateN, e, w, ov, abs_ov
 
     return run_blocks
 
@@ -311,7 +313,7 @@ def run_qmc_energy_fp(
     pprint(params)
     print("")
     # build ctx
-    prop_ctx = prop_ops.build_prop_ctx(ham_data, trial_ops.get_rdm1(trial_data), params)
+    prop_ctx = prop_ops.build_prop_ctx(ham_data,sys, trial_ops.get_rdm1(trial_data), params)
     if meas_ctx is None:
         meas_ctx = meas_ops.build_meas_ctx(ham_data, trial_data)
     if state is None:
@@ -326,14 +328,16 @@ def run_qmc_energy_fp(
         )
     
     
-    if mesh is None or mesh.size == 1:
-        block_fn_sr = block_fn
-    else:
-        data_sh = NamedSharding(mesh, P("data"))
-        sr_sharded = partial(stochastic_reconfiguration, data_sharding=data_sh)
-        block_fn_sr = partial(block_fn, sr_fn=sr_sharded)
+    # if mesh is None or mesh.size == 1:
+    #     block_fn_sr = block_fn
+    # else:
+    #     data_sh = NamedSharding(mesh, P("data"))
+    #     sr_sharded = partial(stochastic_reconfiguration, data_sharding=data_sh)
+    #     block_fn_sr = partial(block_fn, sr_fn=sr_sharded)
 
-    run_blocks = make_run_blocks(
+    block_fn_sr = block_fn
+
+    run_blocks = make_run_blocks_fp(
         block_fn=block_fn_sr,
         sys=sys,
         params=params,
@@ -342,119 +346,184 @@ def run_qmc_energy_fp(
         prop_ops=prop_ops,
     )
 
-    t0 = time.perf_counter()
-    t_mark = t0
-
-    print_every = params.n_eql_blocks // 5 if params.n_eql_blocks >= 5 else 0
-    block_e_eq = []
-    block_w_eq = []
-    block_e_eq.append(state.e_estimate)
-    block_w_eq.append(jnp.sum(state.weights))
-    print("\nEquilibration:\n")
-    if print_every:
-        print(
-            f"{'':4s}"
-            f"{'block':>9s}  "
-            f"{'E_blk':>14s}  "
-            f"{'W':>12s}   "
-            f"{'nodes':>10s}  "
-            f"{'t[s]':>8s}"
-        )
-    print(
-        f"[eql {0:4d}/{params.n_eql_blocks}]  "
-        f"{float(state.e_estimate):14.10f}  "
-        f"{float(jnp.sum(state.weights)):12.6e}  "
-        f"{int(state.node_encounters):10d}  "
-        f"{0.0:8.1f}"
-    )
-    chunk = print_every
-    for start in range(0, params.n_eql_blocks, chunk):
-        n = min(chunk, params.n_eql_blocks - start)
-        state, e_chunk, w_chunk = run_blocks(
-            state,
-            ham_data=ham_data,
-            trial_data=trial_data,
-            meas_ctx=meas_ctx,
-            prop_ctx=prop_ctx,
-            n_blocks=n,
-        )
-        block_e_eq.extend(e_chunk.tolist())
-        block_w_eq.extend(w_chunk.tolist())
-        w_chunk_avg = jnp.mean(w_chunk)
-        e_chunk_avg = jnp.mean(e_chunk * w_chunk) / w_chunk_avg
-        elapsed = time.perf_counter() - t0
-        print(
-            f"[eql {start + n:4d}/{params.n_eql_blocks}]  "
-            f"{float(e_chunk_avg):14.10f}  "
-            f"{float(w_chunk_avg):12.6e}  "
-            f"{int(state.node_encounters):10d}  "
-            f"{elapsed:8.1f}"
-        )
-    block_e_eq = jnp.asarray(block_e_eq)
-    block_w_eq = jnp.asarray(block_w_eq)
+#    t0 = time.perf_counter()
+#    t_mark = t0
 
     # sampling
     print("\nSampling:\n")
-    if target_error is None:
-        target_error = 0.0
-    print_every = params.n_blocks // 10 if params.n_blocks >= 10 else 0
-    block_e_s = []
-    block_w_s = []
-    if print_every:
-        print(
-            f"{'':4s}{'block':>9s}  {'E_avg':>14s}  {'E_err':>10s}  {'E_block':>14s}  "
-            f"{'W':>12s}    {'nodes':>10s}  {'dt[s/bl]':>10s}  {'t[s]':>7s}"
-        )
-
+    # if target_error is None:
+    #     target_error = 0.0
+    # print_every = params.n_blocks // 10 if params.n_blocks >= 10 else 1
+    print_every = 1
+    # block_e_s = []
+    # block_w_s = []
+    # block_ov_s = []
+    # block_abs_ov_s = []
+    block_e_all = np.zeros((params.n_ene_blocks, params.n_blocks+1)) +0.0j
+    block_w_all = np.zeros((params.n_ene_blocks, params.n_blocks+1)) +0.0j  
+    block_ov_all = np.zeros((params.n_ene_blocks, params.n_blocks+1)) +0.0j
+    block_abs_ov_all = np.ones((params.n_ene_blocks, params.n_blocks+1)) + 0.0j
+    total_sign =  np.ones((params.n_ene_blocks, params.n_blocks+1)) + 0.0j
+    # if print_every:
+    #     print(
+    #         f"{'':4s}{'block':>9s}  {'E_avg':>14s}  {'E_err':>10s}  {'E_block':>14s}  "
+    #         f"{'W':>12s}    {'nodes':>10s}  {'dt[s/bl]':>10s}  {'t[s]':>7s}"
+    #     )
+    #block_e_all[:,0] = jnp.array(jnp.sum())
+    block_e_all[:,0] = jnp.array(state.e_estimate)
+    block_w_all[:,0] = jnp.sum(state.weights)
+    block_ov_all[:,0] = jnp.sum(state.overlaps)
+    block_abs_ov_all[:,0] = jnp.sum(jnp.abs(state.overlaps))
+    total_sign[:,0] = jnp.sum(state.overlaps) / (jnp.sum(jnp.abs(state.overlaps)))
     chunk = print_every
-    for start in range(0, params.n_blocks, chunk):
-        n = min(chunk, params.n_blocks - start)
-        state, e_chunk, w_chunk = run_blocks(
+    for i in range(params.n_ene_blocks):
+        block_e_s = []
+        block_w_s = []
+        block_ov_s = []
+        block_abs_ov_s = []
+        print("Trajectory number", i)
+        # print("state rng key", state.rng_key)
+        # print("Seed for propagation", params.seed)
+        # seed_new = params.seed + i
+        if i > 0 :
+            params = replace( params, seed = state.rng_key)
+        # print("Seed for propagation", params.seed)
+            state = prop_ops.fp_init_prop_state(
+            sys=sys,
+            ham_data=ham_data,
+            trial_ops=trial_ops,
+            trial_data=trial_data,
+            meas_ops=meas_ops,
+            params=params,
+            mesh=mesh,
+        )
+        for j,start in enumerate(range(0, params.n_blocks+1, chunk)):
+            n = min(chunk, params.n_blocks - start)
+            state, e_chunk, w_chunk, ov_chunk, abs_ov_chunk = run_blocks(
             state,
             ham_data=ham_data,
             trial_data=trial_data,
             meas_ctx=meas_ctx,
             prop_ctx=prop_ctx,
             n_blocks=n,
+            n_ene_blocks=params.n_ene_blocks,
+            )
+        #    print("size of e_chunk", e_chunk.shape)
+            block_e_s.extend(e_chunk.tolist())
+            block_w_s.extend(w_chunk.tolist())
+            block_ov_s.extend(ov_chunk.tolist())
+            block_abs_ov_s.extend(abs_ov_chunk.tolist())
+            # print("n", n)
+            # print("start", start)
+            # print("size of ov_chunk", ov_chunk.shape)
+            # print("size of e_chunk", e_chunk.shape)
+            # print("start * n"  , start*n)
+            # print("shape of block_e_all", block_e_all.shape)
+            # print("iteration", j, "ene block", i)
+            block_e_all[i,(j*n)+1:(j*n+len(e_chunk)+1)] = np.array(e_chunk.tolist())
+            # print("Block energy", block_e_all)
+            block_w_all[i,(j*n)+1:(j*n+len(w_chunk)+1)] = np.array(w_chunk.tolist())   
+            block_ov_all[i,(j*n)+1:(j*n+len(ov_chunk)+1)] = np.array(ov_chunk.tolist())
+            block_abs_ov_all[i,(j*n)+1:(j*n+len(abs_ov_chunk)+1)] = np.array(abs_ov_chunk.tolist())
+            sign = block_ov_all / block_abs_ov_all
+            sign1 = ov_chunk / abs_ov_chunk
+            total_sign[i,(j*n)+1:(j*n+len(sign1)+1)] = np.array(sign1.tolist())
+            # print("sign", block_ov_all)
+            mean_energies = jnp.sum(block_e_all[:i+1]*block_w_all[:i+1],axis=0)/jnp.sum(block_w_all[:i+1],axis=0)
+            # print("Mean energies", mean_energies)
+            # print("ENergy of the block", e_chunk)
+            # print("Weight of the block", w_chunk)
+            mean_signs = jnp.sum(sign*block_w_all,axis=0)/jnp.sum(block_w_all,axis=0)
+            mean_sign_t = jnp.sum(total_sign[:i+1]*block_w_all[:i+1],axis=0)/jnp.sum(block_w_all[:i+1],axis=0)
+            if i == 0:
+                error = jnp.zeros_like(mean_energies)
+            else:
+                error = jnp.std(block_e_all[:i+1],axis=0)/jnp.sqrt(i)
+        
+            timer = params.dt*params.n_prop_steps*chunk*jnp.arange(params.n_blocks+1)
+            print(
+            # f"[enumerate {j}]"
+            f"{(timer[j]):14.4f} "
+            f"{(mean_energies[j].real):14.10f}  "
+            f"{(error[j].real):10.3e}  "
+            # f"{(mean_signs[j].real):10.2f}"
+            f"{(mean_sign_t[j].real):10.2f}"
         )
-        block_e_s.extend(e_chunk.tolist())
-        block_w_s.extend(w_chunk.tolist())
-        w_chunk_avg = jnp.mean(w_chunk)
-        e_chunk_avg = jnp.mean(e_chunk * w_chunk) / w_chunk_avg
-        elapsed = time.perf_counter() - t0
-        dt_per_block = (time.perf_counter() - t_mark) / float(n)
-        t_mark = time.perf_counter()
-        stats = blocking_analysis_ratio(
-            jnp.asarray(block_e_s), jnp.asarray(block_w_s), print_q=False
-        )
-        mu = float(stats["mu"])
-        se = float(stats["se_star"])
-        nodes = int(state.node_encounters)
-        print(
-            f"[blk {start + n:4d}/{params.n_blocks}]  "
-            f"{mu:14.10f}  "
-            f"{se:10.3e}  "
-            f"{float(e_chunk_avg):14.10f}  "
-            f"{float(w_chunk_avg):12.6e}  "
-            f"{nodes:10d}  "
-            f"{dt_per_block:9.3f}  "
-            f"{elapsed:8.1f}"
-        )
-        if se <= target_error and target_error > 0.0:
-            print(f"\nTarget error {target_error:.3e} reached at block {start + n}.")
-            break
-    block_e_s = jnp.asarray(block_e_s)
-    block_w_s = jnp.asarray(block_w_s)
+            # w_chunk_avg = jnp.mean(w_chunk)
+            # e_chunk_avg = jnp.mean(e_chunk * w_chunk) / w_chunk_avg
+            # elapsed = time.perf_counter() - t0
+            # dt_per_block = (time.perf_counter() - t_mark) / float(n)
+        # t_mark = time.perf_counter()
+        # stats = blocking_analysis_ratio(
+        #     jnp.asarray(block_e_s), jnp.asarray(block_w_s), print_q=False
+        # )
+        # mu = float(stats["mu"])
+        # se = float(stats["se_star"])
+    #    nodes = int(state.node_encounters)
+        #     print(
+        #     f"[blk {start}/{params.n_blocks}]  "
+        #     # f"{mu:14.10f}  "
+        #     # f"{se:10.3e}  "
+        #     f"{(e_chunk_avg):14.10f}  "
+        #     f"{(w_chunk_avg):12.6e}  "
+        # #    f"{nodes:10d}  "
+        #     f"{dt_per_block:9.3f}  "
+        #     f"{elapsed:8.1f}"
+        # )
+        # if se <= target_error and target_error > 0.0:
+        #     print(f"\nTarget error {target_error:.3e} reached at block {start + n}.")
+        #     break
+        # block_e_all = block_e_all.at[i, :].set(jnp.asarray(block_e_s))
+        # block_w_all = block_w_all.at[i, :].set(jnp.asarray(block_w_s))
+        # block_ov_all = block_ov_all.at[i, :].set(jnp.asarray(block_ov_s))
+        # block_abs_ov_all = block_abs_ov_all.at[i, :].set(jnp.asarray(block_abs_ov_s))
 
-    data_clean, _ = reject_outliers(jnp.column_stack((block_e_s, block_w_s)), obs=0)
-    print(f"\nRejected {block_e_s.shape[0] - data_clean.shape[0]} outlier blocks.")
-    block_e_s = jnp.asarray(data_clean[:, 0])
-    block_w_s = jnp.asarray(data_clean[:, 1])
-    print("\nFinal blocking analysis:")
-    stats = blocking_analysis_ratio(block_e_s, block_w_s, print_q=True)
-    mean, err = stats["mu"], stats["se_star"]
+        # block_e_all[i,1:] = jnp.asarray(block_e_s)
+        # block_w_all[i,1:] = jnp.asarray(block_w_s)
+        # block_ov_all[i,1:] = jnp.asarray(block_ov_s)
+        # block_abs_ov_all[i,1:] = jnp.asarray(block_abs_ov_s)
+        # sign = block_ov_all / block_abs_ov_all
+        # mean_energies = jnp.sum(block_e_all[:i+1]*block_w_all[:i+1],axis=0)/jnp.sum(block_w_all[:i+1],axis=0)
+        # mean_signs = jnp.sum(sign*block_w_all,axis=0)/jnp.sum(block_w_all,axis=0)
+        # if i == 0:
+        #     error = jnp.zeros_like(mean_energies)
+        # else:
+        #     error = jnp.std(block_e_all[:i+1],axis=0)/jnp.sqrt(i)
+        
+        # timer = params.dt*params.n_prop_steps*jnp.arange(params.n_blocks+1)
+        # print(
+        #     f"{timer[i]} "
+        #     f"{(mean_energies[i].real):14.10f}  "
+        #     f"{(error[i]):10.3e}  "
+        #     f"{(mean_signs[i]):12.6e}"
+        # )
+    # sign = block_ov_all / block_abs_ov_all
 
-    block_e_all = jnp.concatenate([block_e_eq, block_e_s])
-    block_w_all = jnp.concatenate([block_w_eq, block_w_s])
+    # for i in range(params.n_ene_blocks):
+    #     mean_energies = jnp.sum(block_e_all[:i+1]*block_w_all[:i+1],axis=0)/jnp.sum(block_w_all[:i+1],axis=0)
+    #     mean_signs = jnp.sum(sign*block_w_all,axis=0)/jnp.sum(block_w_all,axis=0)
+    #     if i == 0:
+    #         error = jnp.zeros_like(mean_energies)
+    #     else:
+    #         error = jnp.std(block_e_all[:i+1],axis=0)/jnp.sqrt(i)
+        
+    #     timer = params.dt*params.n_prop_steps*jnp.arange(params.n_blocks+1)
+    #     print(
+    #         f"{timer[i]} "
+    #         f"{(mean_energies[i].real):14.10f}  "
+    #         f"{(error[i]):10.3e}  "
+    #         f"{(mean_signs[i]):12.6e}"
+    #     )
 
-    return mean, err, block_e_all, block_w_all
+    # data_clean, _ = reject_outliers(jnp.column_stack((block_e_s, block_w_s)), obs=0)
+    # print(f"\nRejected {block_e_s.shape[0] - data_clean.shape[0]} outlier blocks.")
+    # block_e_s = jnp.asarray(data_clean[:, 0])
+    # block_w_s = jnp.asarray(data_clean[:, 1])
+    # print("\nFinal blocking analysis:")
+    # stats = blocking_analysis_ratio(block_e_s, block_w_s, print_q=True)
+    # mean, err = stats["mu"], stats["se_star"]
+
+    # block_e_all = jnp.concatenate([block_e_eq, block_e_s])
+    # block_w_all = jnp.concatenate([block_w_eq, block_w_s])
+
+    return  block_e_all, block_w_all, block_ov_all, block_abs_ov_all

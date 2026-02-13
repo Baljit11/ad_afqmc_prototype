@@ -13,7 +13,7 @@ from ..ham.chol import HamChol
 from ..sharding import shard_prop_state
 from ..walkers import init_walkers
 from .chol_afqmc_ops import  TrotterOps, make_trotter_ops
-from .afqmc import init_prop_state
+from .afqmc import init_prop_state, fp_init_prop_state
 from .fp_chol_afqmc_ops import FpCholAfqmcCtx, _build_prop_ctx_fp
 from .types import PropOps_fp, PropState, QmcParams
 
@@ -29,9 +29,12 @@ def afqmc_step_fp(
     prop_ctx: FpCholAfqmcCtx,
     meas_ctx: Any,
 ) -> PropState:
+    # jax.debug.print("state a {}", state.rng_key)
     key, subkey = jax.random.split(state.rng_key)
+    # jax.debug.print("key for fields {b}", b=subkey)
     nw = wk.n_walkers(state.walkers)
     fields = jax.random.normal(subkey, (nw, ham_data.chol.shape[0]))
+#    jax.debug.print("fields {a}", a=fields)
     wk_kind = sys.walker_kind.lower()
     assert wk_kind in [
             "restricted",
@@ -50,24 +53,29 @@ def afqmc_step_fp(
                 prop_ctx.dt * prop_ctx.h0_prop_fp
             )
 
+#    jax.debug.print("walkers before prop {a}", a=state.walkers)
     walkers_new = wk.vmap_chunked(
         trotter_ops.apply_trotter, n_chunks=params.n_chunks, in_axes=(0, 0, None, None)
     )(state.walkers, fields, prop_ctx, 10)
-        
+#    jax.debug.print("walkers after prop {a}", a=walkers_new)
+#    jax.debug.print("constants {a}", a=constants)
     walkers_new = wk.multiply_constants(walkers_new,constants)
-    norms = walkers_new.qr_norm()
+#    jax.debug.print("walkers after multiplying constants {a}", a=walkers_new)
+    q, norms = wk.orthogonalize(walkers_new, wk_kind)
+#    jax.debug.print("walkers after orthogonalization {a}", a=q)
+#    jax.debug.print("norms after orthogonalization {a}", a=norms)
     weights_new = state.weights*norms.real
+#    jax.debug.print("walkers weight after orthogonalization {a}", a=weights_new)
+    key , subkey = jax.random.split(key)
     zeta = jax.random.uniform(subkey)
+    # jax.debug.print("zeta subkey {a}", a=subkey)
+    # jax.debug.print("updated key after prop {}", key)
+#    jax.debug.print("zeta {a}", a=zeta)
+#    jax.debug.print("walkers weight after prop {a}", a=weights_new)
 
-        # Since we compute only R in the QR we need to divide
-        # by norms.real after the SR, requiering to keep track
-        # of the indices
-    indices = wk._sr_indices(state.weights, zeta, nw)
-    norms = norms[indices]
-
-    walker_sr, weight_sr = wk.stochastic_reconfiguration(state.walkers,weights_new,zeta,wk_kind)
-        
-    walker_sr /= norms.real
+    walker_sr, weight_sr = wk.stochastic_reconfiguration(q,weights_new,zeta,wk_kind)
+#    jax.debug.print("walkers after sr {a}", a=walker_sr)    
+#    weight_sr /= norms.real
 
     return PropState(walkers=walker_sr,
         weights=weight_sr,
@@ -78,7 +86,7 @@ def afqmc_step_fp(
         node_encounters=state.node_encounters,
         )
 
-def make_prop_ops_fp(ham_basis: str, walker_kind: str, sys:System, mixed_precision=False) -> PropOps:
+def make_prop_ops_fp(ham_basis: str, walker_kind: str, sys:System, mixed_precision=False) -> PropOps_fp:
     trotter_ops = make_trotter_ops(
         ham_basis, walker_kind, mixed_precision=mixed_precision
     )
@@ -120,5 +128,5 @@ def make_prop_ops_fp(ham_basis: str, walker_kind: str, sys:System, mixed_precisi
         
 
     return PropOps_fp(
-            init_prop_state=init_prop_state, build_prop_ctx=build_prop_ctx_fp, step=step_fp
+            init_prop_state=init_prop_state, fp_init_prop_state=fp_init_prop_state,build_prop_ctx=build_prop_ctx_fp, step=step_fp
     )

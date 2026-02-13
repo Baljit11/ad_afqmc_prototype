@@ -148,13 +148,13 @@ def block_fp(
         return carry, None
 
     state, _ = lax.scan(_scan_step, state, xs=None, length=params.n_prop_steps)
-
-    walkers_new = wk.orthonormalize(state.walkers, sys.walker_kind)
+#    jax.debug.print("Walkers after step one before orthonormalize: {a}", a=state.weights)
+    # walkers_new = wk.orthonormalize(state.walkers, sys.walker_kind)
     overlaps_new = wk.vmap_chunked(
-        meas_ops.overlap, n_chunks=params.n_chunks, in_axes=(0, None)
-    )(walkers_new, trial_data)
-    state = state._replace(walkers=walkers_new, overlaps=overlaps_new)
-
+         meas_ops.overlap, n_chunks=params.n_chunks, in_axes=(0, None)
+    )(state.walkers, trial_data)
+    state = state._replace(overlaps=overlaps_new)
+#    jax.debug.print("Walkers after orthonormalize: {a}", a=state.weights)
     e_kernel = meas_ops.require_kernel(k_energy)
     e_samples = wk.vmap_chunked(
         e_kernel, n_chunks=params.n_chunks, in_axes=(0, None, None, None)
@@ -171,6 +171,7 @@ def block_fp(
     e_block = jnp.sum(weights * overlaps * e_samples) / w_sum
     
     ov = jnp.sum(overlaps)
+#    jax.debug.print("overlap IN block {a}", a=ov)
     abs_ov = jnp.sum(jnp.abs(overlaps))
 
     # key, subkey = jax.random.split(state.rng_key)
@@ -179,6 +180,9 @@ def block_fp(
     # overlaps_sr = wk.vmap_chunked(
     #     meas_ops.overlap, n_chunks=params.n_chunks, in_axes=(0, None)
     # )(w_sr, trial_data)
+    # ov = jnp.sum(overlaps_sr)
+    # abs_ov = jnp.sum(jnp.abs(overlaps_sr))
+    # jax.debug.print("Walkers after SR: {a}", a=weights_sr)
     # state = state._replace(
     #     walkers=w_sr,
     #     weights=weights_sr,
