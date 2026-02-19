@@ -16,5 +16,5 @@ mf = scf.RHF(mol)
 mf.kernel()
 
 afqmc = Rhf(mf)
-block_e_all, block_w_all, block_ov_all, block_abs_ov_all = afqmc.kernel()
+block_e_all, block_w_all = afqmc.kernel()
 
